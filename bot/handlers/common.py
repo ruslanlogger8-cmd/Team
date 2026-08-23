@@ -12,9 +12,12 @@ from aiogram.types import CallbackQuery, Message
 from ..config import Config
 from ..db import Database
 from ..emoji import e, esc
-from ..keyboards import back_menu, confirm_withdraw, history_nav, main_menu, wallet_menu
+from ..gifts.claim import ClaimResult, submit_claim
+from ..keyboards import (
+    back_menu, claim_menu, confirm_withdraw, history_nav, main_menu, wallet_menu,
+)
 from ..payout import execute_payout
-from ..states import WalletForm
+from ..states import ClaimForm, WalletForm
 from ..ui import reset_state, safe_edit, send_screen
 from ..utils import fmt_ton, is_valid_ton_address
 
@@ -344,3 +347,127 @@ async def _alert_admins(bot, config: Config, result, user_id: int) -> None:
             await bot.send_message(admin_id, text)
         except Exception:  # noqa: BLE001 — админ мог не запускать бота
             logger.warning("Не удалось уведомить админа %s", admin_id)
+
+
+# ─── Заявка на подарок ─────────────────────────────────────────────────
+
+GIFT_STATUS = {
+    "received": ("time", "принят, ждёт отправки на маркет"),
+    "deposited": ("next", "отправлен на маркет"),
+    "listed": ("up", "выставлен на продажу"),
+    "sold": ("check", "продан, доля начисляется"),
+    "paid": ("check", "продан, доля выплачена"),
+    "skipped": ("cross", "пропущен"),
+}
+
+
+@router.callback_query(F.data == "m:claim")
+async def claim_screen(call: CallbackQuery, config: Config, state: FSMContext) -> None:
+    await reset_state(state)
+    if not config.gifts_enabled:
+        await call.answer("Приём подарков сейчас выключен", show_alert=True)
+        return
+    await safe_edit(
+        call,
+        f"{e('gift')} <b>Заявка на подарок</b>\n"
+        f"{RULE}\n"
+        f"{e('dot')} Отправил подарок и хочешь закрепить его за собой — "
+        f"пришли ссылку на него.\n\n"
+        f"{e('shield')} Заявка проходит, только если подарок реально дошёл. "
+        f"Чужой закрепить нельзя.\n\n"
+        f"{e('star')} Доля · <b>{config.worker_share_percent}%</b> от суммы продажи",
+        claim_menu(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "m:claim_send")
+async def claim_prompt(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(ClaimForm.waiting_link)
+    await safe_edit(
+        call,
+        f"{e('link')} <b>Ссылка на подарок</b>\n"
+        f"{RULE}\n"
+        f"{e('dot')} Открой подарок в Telegram, нажми «Поделиться» "
+        f"и пришли ссылку сюда.\n\n"
+        f"{e('dot')} Вид ссылки · <code>t.me/nft/PlushPepe-42</code>",
+        back_menu(),
+    )
+    await call.answer()
+
+
+@router.message(ClaimForm.waiting_link, F.text)
+async def claim_submit(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    claim = await submit_claim(db, message.from_user.id, message.text)
+
+    if claim.result is ClaimResult.BAD_LINK:
+        await message.answer(
+            f"{e('cross')} <b>Ссылку не разобрал</b>\n"
+            f"{RULE}\n"
+            f"{e('dot')} Нужна ссылка вида <code>t.me/nft/PlushPepe-42</code>\n"
+            f"{e('dot')} Открой подарок → «Поделиться» → скопируй ссылку"
+        )
+        return
+
+    await state.clear()
+    keyboard = main_menu(is_admin=message.from_user.id in config.admin_ids)
+
+    if claim.result is ClaimResult.NOT_FOUND:
+        await message.answer(
+            f"{e('cross')} <b>Такой подарок не поступал</b>\n"
+            f"{RULE}\n"
+            f"{e('dot')} <code>{esc(claim.slug)}</code>\n\n"
+            f"{e('time')} Если только что отправил — подожди минуту и повтори.\n"
+            f"{e('warn')} Проверь, что отправлял на нужный аккаунт.",
+            reply_markup=keyboard,
+        )
+        return
+
+    if claim.result is ClaimResult.TAKEN:
+        await message.answer(
+            f"{e('warn')} <b>Подарок уже закреплён</b>\n"
+            f"{RULE}\n"
+            f"{e('dot')} {esc(claim.title)}\n\n"
+            f"{e('shield')} Он числится за другим воркером. "
+            f"Если это ошибка — напиши администратору.",
+            reply_markup=keyboard,
+        )
+        return
+
+    icon_key, label = GIFT_STATUS.get(claim.status, ("dot", claim.status))
+    head = (
+        "Заявка принята" if claim.result is ClaimResult.ATTACHED
+        else "Этот подарок уже за тобой"
+    )
+    await message.answer(
+        f"{e('check')} <b>{head}</b>\n"
+        f"{RULE}\n"
+        f"{e('gift')} {esc(claim.title)}\n"
+        f"{e(icon_key)} Статус · {label}\n\n"
+        f"{e('star')} После продажи получишь <b>{config.worker_share_percent}%</b> "
+        f"на баланс, выплата уйдёт автоматически.",
+        reply_markup=keyboard,
+    )
+
+
+@router.callback_query(F.data == "m:my_gifts")
+async def my_gifts(call: CallbackQuery, db: Database, state: FSMContext) -> None:
+    await reset_state(state)
+    rows = await db.gifts_by_worker(call.from_user.id)
+
+    if not rows:
+        body = f"{e('dot')} Пока ни одного подарка за тобой не числится."
+    else:
+        blocks = []
+        for row in rows:
+            icon_key, label = GIFT_STATUS.get(row["status"], ("dot", row["status"]))
+            block = f"{e(icon_key)} <b>{esc(row['title'] or row['slug'])}</b>\n{label}"
+            if row["share_nano"]:
+                block += f"\n{e('coin')} Доля · <b>{fmt_ton(row['share_nano'])}</b>"
+            elif row["list_price_nano"]:
+                block += f"\n{e('coin')} Цена · {fmt_ton(row['list_price_nano'])}"
+            blocks.append(block)
+        body = "\n\n".join(blocks)
+
+    await safe_edit(call, f"{e('gift')} <b>Мои подарки</b>\n{RULE}\n{body}", claim_menu())
+    await call.answer()

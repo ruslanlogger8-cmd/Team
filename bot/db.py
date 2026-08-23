@@ -324,6 +324,13 @@ class Database:
             )
             await self.conn.commit()
 
+    async def gifts_by_worker(self, worker_id: int, limit: int = 10) -> list[dict]:
+        cur = await self.conn.execute(
+            "SELECT * FROM gifts WHERE worker_id=? ORDER BY id DESC LIMIT ?",
+            (worker_id, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     async def gift_stats(self) -> dict[str, int]:
         cur = await self.conn.execute(
             "SELECT status, COUNT(*) AS c, COALESCE(SUM(sold_price_nano),0) AS s FROM gifts "

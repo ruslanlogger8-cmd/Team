@@ -42,6 +42,7 @@ def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
             btn("Кошелёк", "m:wallet", PRIMARY, "wallet"),
             btn("История", "m:history", PRIMARY, "history"),
         ],
+        [btn("Подать заявку на подарок", "m:claim", SUCCESS, "gift")],
         [btn("Топ воркеров", "m:top", PRIMARY, "top")],
         [btn("Вывести средства", "m:withdraw", SUCCESS, "withdraw")],
     ]
@@ -92,6 +93,16 @@ def admin_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [btn("Статистика", "a:stats", PRIMARY, "stats")],
+            [btn("В меню", "m:main", PRIMARY, "back")],
+        ]
+    )
+
+
+def claim_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [btn("Отправить ссылку", "m:claim_send", SUCCESS, "link")],
+            [btn("Мои подарки", "m:my_gifts", PRIMARY, "history")],
             [btn("В меню", "m:main", PRIMARY, "back")],
         ]
     )

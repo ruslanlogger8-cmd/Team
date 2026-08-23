@@ -8,3 +8,7 @@ class WalletForm(StatesGroup):
 class CreditForm(StatesGroup):
     waiting_user = State()
     waiting_amount = State()
+
+
+class ClaimForm(StatesGroup):
+    waiting_link = State()
