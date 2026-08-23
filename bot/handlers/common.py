@@ -516,7 +516,9 @@ async def claim_prompt(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(ClaimForm.waiting_link, F.text)
 async def claim_submit(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    claim = await submit_claim(db, message.from_user.id, message.text)
+    claim = await submit_claim(
+        db, message.from_user.id, message.text, config.claim_needs_approval
+    )
 
     if claim.result is ClaimResult.BAD_LINK:
         await message.answer(
@@ -548,6 +550,30 @@ async def claim_submit(message: Message, state: FSMContext, db: Database, config
             f"{e('dot')} {esc(claim.title)}\n\n"
             f"{e('shield')} Он числится за другим воркером. "
             f"Если это ошибка — напиши администратору.",
+            reply_markup=keyboard,
+        )
+        return
+
+    if claim.result is ClaimResult.DUPLICATE:
+        await message.answer(
+            f"{e('time')} <b>На этот подарок уже есть заявка</b>\n"
+            f"{RULE}\n"
+            f"{e('dot')} {esc(claim.title)}\n\n"
+            f"{e('shield')} Администратор её рассматривает. "
+            f"Если подарок твой — напиши ему.",
+            reply_markup=keyboard,
+        )
+        return
+
+    if claim.result is ClaimResult.PENDING:
+        await _notify_claim(message.bot, config, claim, message.from_user)
+        await message.answer(
+            f"{e('time')} <b>Заявка отправлена на проверку</b>\n"
+            f"{RULE}\n"
+            f"{e('gift')} {esc(claim.title)}\n\n"
+            f"{e('shield')} Подарок закрепят за тобой после подтверждения "
+            f"администратором — так чужой подарок нельзя забрать по ссылке.\n"
+            f"{e('dot')} Ответ придёт сюда же.",
             reply_markup=keyboard,
         )
         return
@@ -589,3 +615,23 @@ async def my_gifts(call: CallbackQuery, db: Database, state: FSMContext) -> None
 
     await safe_edit(call, f"{e('gift')} <b>Мои подарки</b>\n{RULE}\n{body}", claim_menu())
     await call.answer()
+
+
+async def _notify_claim(bot, config: Config, claim, user) -> None:
+    """Отправляет админам заявку с кнопками подтверждения."""
+    from ..keyboards import claim_decision
+
+    text = (
+        f"{e('gift')} <b>Заявка на подарок</b>\n"
+        f"{RULE}\n"
+        f"{e('profile')} {esc(user.full_name)} · @{esc(user.username or '—')}\n"
+        f"{e('id')} <code>{user.id}</code>\n\n"
+        f"{e('dot')} {esc(claim.title)}\n"
+        f"<code>{esc(claim.slug)}</code>\n\n"
+        f"{e('warn')} Подтверждай, только если это правда его подарок."
+    )
+    for admin_id in config.admin_ids:
+        try:
+            await bot.send_message(admin_id, text, reply_markup=claim_decision(claim.request_id))
+        except Exception:  # noqa: BLE001
+            logger.warning("Не удалось отправить заявку админу %s", admin_id)

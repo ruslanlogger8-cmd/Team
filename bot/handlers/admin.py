@@ -84,9 +84,9 @@ async def credit(message: Message, db: Database, config: Config, payer) -> None:
         await _auto_payout(message, db, config, payer, target_id)
 
 
-async def _notify(message: Message, user_id: int, text: str) -> bool:
+async def _notify(source, user_id: int, text: str) -> bool:
     try:
-        await message.bot.send_message(user_id, text)
+        await source.bot.send_message(user_id, text)
         return True
     except Exception:  # noqa: BLE001 — работник мог заблокировать бота
         return False
@@ -330,3 +330,88 @@ async def admin_stats(call: CallbackQuery, db: Database, config: Config) -> None
         return
     await safe_edit(call, await _stats_text(db, config), back_menu())
     await call.answer()
+
+
+@router.callback_query(F.data.startswith("cl:"))
+async def resolve_claim(call: CallbackQuery, db: Database, config: Config) -> None:
+    """Подтверждение или отклонение заявки воркера на подарок."""
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    _, decision, raw_id = call.data.split(":", 2)
+    try:
+        request_id = int(raw_id)
+    except ValueError:
+        await call.answer("Битая заявка", show_alert=True)
+        return
+
+    approved = decision == "ok"
+    request = await db.resolve_claim_request(request_id, approved)
+    if request is None:
+        await safe_edit(
+            call,
+            f"{e('warn')} <b>Заявка уже закрыта</b>\n"
+            f"{RULE}\n{e('dot')} Её обработали раньше.",
+        )
+        await call.answer()
+        return
+
+    gift = await db.get_gift(request["slug"])
+    title = (gift or {}).get("title") or request["slug"]
+    worker_id = request["worker_id"]
+
+    if approved:
+        attached = gift and gift["worker_id"] == worker_id
+        head = "Заявка подтверждена" if attached else "Подтверждено, но подарок уже занят"
+        icon_key = "check" if attached else "warn"
+    else:
+        head = "Заявка отклонена"
+        icon_key = "cross"
+
+    await safe_edit(
+        call,
+        f"{e(icon_key)} <b>{head}</b>\n"
+        f"{RULE}\n"
+        f"{e('gift')} {esc(title)}\n"
+        f"{e('profile')} Воркер · <code>{worker_id}</code>",
+    )
+    await call.answer()
+
+    worker_text = (
+        f"{e('check')} <b>Подарок закреплён за тобой</b>\n"
+        f"{RULE}\n"
+        f"{e('gift')} {esc(title)}\n\n"
+        f"{e('star')} После продажи получишь {config.worker_share_percent}% на баланс."
+        if approved else
+        f"{e('cross')} <b>Заявка отклонена</b>\n"
+        f"{RULE}\n"
+        f"{e('gift')} {esc(title)}\n\n"
+        f"{e('dot')} Если это твой подарок — напиши администратору."
+    )
+    await _notify(call, worker_id, worker_text)
+
+
+@router.message(Command("claims"))
+async def pending_claims(message: Message, db: Database, config: Config) -> None:
+    """/claims — заявки, ждущие решения."""
+    if not _is_admin(message.from_user.id, config):
+        return
+
+    from ..keyboards import claim_decision
+
+    requests = await db.pending_claim_requests()
+    if not requests:
+        await message.answer(f"{e('check')} Заявок на рассмотрении нет.")
+        return
+
+    await message.answer(f"{e('gift')} <b>Заявки на подарки: {len(requests)}</b>")
+    for request in requests[:10]:
+        gift = await db.get_gift(request["slug"])
+        title = (gift or {}).get("title") or request["slug"]
+        await message.answer(
+            f"{e('dot')} {esc(title)}\n"
+            f"<code>{esc(request['slug'])}</code>\n"
+            f"{e('profile')} Воркер · <code>{request['worker_id']}</code>",
+            reply_markup=claim_decision(request["id"]),
+        )

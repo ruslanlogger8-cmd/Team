@@ -116,3 +116,12 @@ def withdraw_choice(all_text: str) -> InlineKeyboardMarkup:
             [btn("В меню", "m:main", PRIMARY, "back")],
         ]
     )
+
+
+def claim_decision(request_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            btn("Подтвердить", f"cl:ok:{request_id}", SUCCESS, "check"),
+            btn("Отклонить", f"cl:no:{request_id}", DANGER, "cross"),
+        ]]
+    )

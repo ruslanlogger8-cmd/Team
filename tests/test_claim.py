@@ -50,17 +50,66 @@ class TestParsing:
 
 @pytest.mark.asyncio
 class TestClaim:
-    async def test_attaches_unclaimed_gift(self, db):
+    async def test_free_gift_goes_to_approval_not_to_claimer(self, db):
+        """Слаг публичный, поэтому свободный подарок не отдаём по первой просьбе."""
         await _worker(db, 1)
         await _incoming(db)
         claim = await submit_claim(db, 1, "https://t.me/nft/PlushPepe-42")
-        assert claim.result is ClaimResult.ATTACHED and claim.ok
+        assert claim.result is ClaimResult.PENDING
+        assert (await db.get_gift("PlushPepe-42"))["worker_id"] is None
+
+    async def test_second_claim_on_same_gift_rejected(self, db):
+        """Пока заявка висит, второй воркер не может подать свою."""
+        await _worker(db, 1)
+        await _worker(db, 2)
+        await _incoming(db)
+        assert (await submit_claim(db, 1, "PlushPepe-42")).result is ClaimResult.PENDING
+        assert (await submit_claim(db, 2, "PlushPepe-42")).result is ClaimResult.DUPLICATE
+
+    async def test_approval_attaches_gift(self, db):
+        await _worker(db, 1)
+        await _incoming(db)
+        claim = await submit_claim(db, 1, "PlushPepe-42")
+        await db.resolve_claim_request(claim.request_id, approved=True)
         assert (await db.get_gift("PlushPepe-42"))["worker_id"] == 1
+
+    async def test_rejection_leaves_gift_free(self, db):
+        await _worker(db, 1)
+        await _incoming(db)
+        claim = await submit_claim(db, 1, "PlushPepe-42")
+        await db.resolve_claim_request(claim.request_id, approved=False)
+        assert (await db.get_gift("PlushPepe-42"))["worker_id"] is None
+
+    async def test_request_cannot_be_resolved_twice(self, db):
+        await _worker(db, 1)
+        await _incoming(db)
+        claim = await submit_claim(db, 1, "PlushPepe-42")
+        assert await db.resolve_claim_request(claim.request_id, approved=True) is not None
+        assert await db.resolve_claim_request(claim.request_id, approved=True) is None
+
+    async def test_direct_mode_attaches_immediately(self, db):
+        await _worker(db, 1)
+        await _incoming(db)
+        claim = await submit_claim(db, 1, "PlushPepe-42", needs_approval=False)
+        assert claim.result is ClaimResult.ATTACHED
+        assert (await db.get_gift("PlushPepe-42"))["worker_id"] == 1
+
+    async def test_concurrent_direct_claims_attach_once(self, db):
+        """Условный UPDATE не даёт двум заявкам пройти одновременно."""
+        import asyncio
+        await _worker(db, 1)
+        await _worker(db, 2)
+        await _incoming(db)
+        results = await asyncio.gather(
+            submit_claim(db, 1, "PlushPepe-42", needs_approval=False),
+            submit_claim(db, 2, "PlushPepe-42", needs_approval=False),
+        )
+        attached = [r for r in results if r.result is ClaimResult.ATTACHED]
+        assert len(attached) == 1
 
     async def test_repeat_claim_is_idempotent(self, db):
         await _worker(db, 1)
-        await _incoming(db)
-        await submit_claim(db, 1, "PlushPepe-42")
+        await _incoming(db, sender=1)
         again = await submit_claim(db, 1, "PlushPepe-42")
         assert again.result is ClaimResult.ALREADY_YOURS and again.ok
 
@@ -99,7 +148,8 @@ class TestClaim:
         service = GiftService(db, Cfg(), None, None)
         assert await service.deposit_ready_gifts() == []
 
-        await submit_claim(db, 1, "PlushPepe-42")
+        claim = await submit_claim(db, 1, "PlushPepe-42")
+        await db.resolve_claim_request(claim.request_id, approved=True)
         gift = await db.get_gift("PlushPepe-42")
         assert gift["worker_id"] == 1 and gift["status"] == "received"
 

@@ -52,6 +52,15 @@ CREATE TABLE IF NOT EXISTS gifts (
     sold_at        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_gifts_status ON gifts(status);
+CREATE TABLE IF NOT EXISTS claim_requests (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug        TEXT NOT NULL,
+    worker_id   INTEGER NOT NULL,
+    status      TEXT NOT NULL,           -- pending | approved | rejected
+    created_at  INTEGER NOT NULL,
+    resolved_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_claims_status ON claim_requests(status);
 CREATE TABLE IF NOT EXISTS credits (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,
@@ -331,12 +340,81 @@ class Database:
             await self.conn.commit()
 
     async def attach_gift_worker(self, slug: str, worker_id: int) -> None:
-        """Привязывает подарок к воркеру вручную, если отправитель был скрыт."""
+        """Привязывает подарок к воркеру. Используется админом — перетирает."""
         async with self._lock:
             await self.conn.execute(
                 "UPDATE gifts SET worker_id=? WHERE slug=?", (worker_id, slug)
             )
             await self.conn.commit()
+
+    async def claim_gift_if_free(self, slug: str, worker_id: int) -> bool:
+        """Занимает подарок, только если он ещё ни за кем не закреплён.
+
+        Условие проверяется прямо в UPDATE: между проверкой и записью не должно
+        быть зазора, иначе два одновременных заявления пройдут оба и подарок
+        достанется не тому.
+        """
+        async with self._lock:
+            cur = await self.conn.execute(
+                "UPDATE gifts SET worker_id=? WHERE slug=? AND worker_id IS NULL",
+                (worker_id, slug),
+            )
+            await self.conn.commit()
+            return cur.rowcount > 0
+
+    async def add_claim_request(self, slug: str, worker_id: int) -> int | None:
+        """Регистрирует заявку на подтверждение админом. None — уже есть такая."""
+        async with self._lock:
+            cur = await self.conn.execute(
+                "SELECT id FROM claim_requests WHERE slug=? AND status='pending'", (slug,)
+            )
+            existing = await cur.fetchone()
+            if existing:
+                return None
+            cur = await self.conn.execute(
+                "INSERT INTO claim_requests (slug, worker_id, status, created_at) "
+                "VALUES (?,?,'pending',?)",
+                (slug, worker_id, int(time.time())),
+            )
+            await self.conn.commit()
+            return cur.lastrowid
+
+    async def get_claim_request(self, request_id: int) -> dict | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM claim_requests WHERE id=?", (request_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def resolve_claim_request(self, request_id: int, approved: bool) -> dict | None:
+        """Закрывает заявку. При одобрении привязывает подарок, если он свободен."""
+        async with self._lock:
+            cur = await self.conn.execute(
+                "SELECT * FROM claim_requests WHERE id=? AND status='pending'", (request_id,)
+            )
+            row = await cur.fetchone()
+            if row is None:
+                await self.conn.rollback()
+                return None
+            request = dict(row)
+
+            await self.conn.execute(
+                "UPDATE claim_requests SET status=?, resolved_at=? WHERE id=?",
+                ("approved" if approved else "rejected", int(time.time()), request_id),
+            )
+            if approved:
+                await self.conn.execute(
+                    "UPDATE gifts SET worker_id=? WHERE slug=? AND worker_id IS NULL",
+                    (request["worker_id"], request["slug"]),
+                )
+            await self.conn.commit()
+            return request
+
+    async def pending_claim_requests(self) -> list[dict]:
+        cur = await self.conn.execute(
+            "SELECT * FROM claim_requests WHERE status='pending' ORDER BY id"
+        )
+        return [dict(r) for r in await cur.fetchall()]
 
     async def gifts_by_worker(self, worker_id: int, limit: int = 10) -> list[dict]:
         cur = await self.conn.execute(

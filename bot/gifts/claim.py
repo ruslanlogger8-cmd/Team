@@ -38,11 +38,13 @@ def parse_nft_slug(text: str) -> str | None:
 
 
 class ClaimResult(str, Enum):
-    ATTACHED = "attached"           # привязали к этому воркеру
+    ATTACHED = "attached"            # привязали сразу
+    PENDING = "pending"              # ушло админу на подтверждение
+    DUPLICATE = "duplicate"          # на этот подарок уже есть заявка
     ALREADY_YOURS = "already_yours"  # уже был за ним
-    TAKEN = "taken"                 # закреплён за другим
-    NOT_FOUND = "not_found"         # бот такого подарка не получал
-    BAD_LINK = "bad_link"           # ссылку не разобрали
+    TAKEN = "taken"                  # закреплён за другим
+    NOT_FOUND = "not_found"          # бот такого подарка не получал
+    BAD_LINK = "bad_link"            # ссылку не разобрали
 
 
 @dataclass(frozen=True)
@@ -51,14 +53,23 @@ class Claim:
     slug: str = ""
     title: str = ""
     status: str = ""
+    request_id: int | None = None
 
     @property
     def ok(self) -> bool:
-        return self.result in (ClaimResult.ATTACHED, ClaimResult.ALREADY_YOURS)
+        return self.result in (
+            ClaimResult.ATTACHED, ClaimResult.ALREADY_YOURS, ClaimResult.PENDING
+        )
 
 
-async def submit_claim(db, worker_id: int, text: str) -> Claim:
-    """Разбирает ссылку и привязывает подарок к воркеру, если это законно."""
+async def submit_claim(db, worker_id: int, text: str, needs_approval: bool = True) -> Claim:
+    """Разбирает ссылку и оформляет притязание воркера на подарок.
+
+    Слаг подарка публичный — он виден в ссылке любому. Поэтому свободный
+    подарок НЕ отдаётся первому попросившему: заявка уходит админу на
+    подтверждение. Иначе чужой подарок со скрытым отправителем мог бы забрать
+    кто угодно, кто увидел ссылку.
+    """
     slug = parse_nft_slug(text)
     if slug is None:
         return Claim(ClaimResult.BAD_LINK)
@@ -78,5 +89,15 @@ async def submit_claim(db, worker_id: int, text: str) -> Claim:
         # иначе выплату получит не тот, кто прислал.
         return Claim(ClaimResult.TAKEN, slug, title, status)
 
-    await db.attach_gift_worker(slug, worker_id)
-    return Claim(ClaimResult.ATTACHED, slug, title, status)
+    if not needs_approval:
+        # Занимаем условным UPDATE: между проверкой и записью не должно быть
+        # зазора, иначе две одновременные заявки пройдут обе.
+        won = await db.claim_gift_if_free(slug, worker_id)
+        if not won:
+            return Claim(ClaimResult.TAKEN, slug, title, status)
+        return Claim(ClaimResult.ATTACHED, slug, title, status)
+
+    request_id = await db.add_claim_request(slug, worker_id)
+    if request_id is None:
+        return Claim(ClaimResult.DUPLICATE, slug, title, status)
+    return Claim(ClaimResult.PENDING, slug, title, status, request_id)

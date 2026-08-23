@@ -75,6 +75,7 @@ class Config:
     gifts_poll_sec: int
     mrkt_workdir: str
     mrkt_deposit_account: str
+    claim_needs_approval: bool
     payout_comment: str = field(default="payout")
 
     @staticmethod
@@ -158,5 +159,7 @@ class Config:
             or os.path.dirname(os.path.abspath(os.environ.get("DB_PATH", "payouts.db"))),
             mrkt_deposit_account=os.environ.get("MRKT_DEPOSIT_ACCOUNT", "mrktbank").strip()
             .lstrip("@") or "mrktbank",
+            claim_needs_approval=os.environ.get("CLAIM_NEEDS_APPROVAL", "true").lower()
+            not in ("0", "false", "no"),
             payout_comment=os.environ.get("PAYOUT_COMMENT", "payout").strip() or "payout",
         )
