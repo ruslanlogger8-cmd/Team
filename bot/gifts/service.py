@@ -79,6 +79,18 @@ class GiftService:
             allow_collection_floor=self._config.allow_collection_floor,
         )
 
+    async def sync_existing(self, gifts: list[IncomingGift]) -> dict[str, int]:
+        """Регистрирует подарки, уже лежащие на аккаунте.
+
+        Повторы отбрасываются по slug, поэтому синхронизацию можно запускать
+        сколько угодно раз — второй выплаты за тот же подарок не будет.
+        """
+        summary = {"registered": 0, "unattributed": 0, "duplicate": 0}
+        for gift in gifts:
+            outcome = await self.register(gift)
+            summary[outcome] = summary.get(outcome, 0) + 1
+        return summary
+
     async def deposit_ready_gifts(self) -> list[tuple[str, str]]:
         """Передаёт на аккаунт MRKT подарки, вышедшие из кулдауна.
 

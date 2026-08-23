@@ -415,3 +415,42 @@ async def pending_claims(message: Message, db: Database, config: Config) -> None
             f"{e('profile')} Воркер · <code>{request['worker_id']}</code>",
             reply_markup=claim_decision(request["id"]),
         )
+
+
+@router.message(Command("sync"))
+async def sync_gifts(
+    message: Message, db: Database, config: Config,
+    gift_watcher=None, gift_service=None,
+) -> None:
+    """/sync — подтянуть подарки, лежащие на аккаунте.
+
+    Слушатель видит только то, что приходит при работающем боте. Всё, что
+    получено до запуска или во время простоя, добирается этой командой.
+    """
+    if not _is_admin(message.from_user.id, config):
+        return
+    if not config.gifts_enabled:
+        await message.answer(f"{e('warn')} Подсистема подарков выключена.")
+        return
+    if gift_watcher is None or gift_service is None:
+        await message.answer(
+            f"{e('cross')} Подсистема подарков не поднялась — смотри логи запуска."
+        )
+        return
+
+    await message.answer(f"{e('time')} Читаю подарки на аккаунте…")
+    try:
+        existing = await gift_watcher.list_saved_gifts()
+        summary = await gift_service.sync_existing(existing)
+    except Exception as exc:  # noqa: BLE001 — покажем причину как есть
+        await message.answer(f"{e('cross')} Не получилось · {esc(exc)}")
+        return
+
+    await message.answer(
+        f"{e('check')} <b>Синхронизация завершена</b>\n"
+        f"{RULE}\n"
+        f"{e('gift')} Всего на аккаунте · <b>{len(existing)}</b>\n"
+        f"{e('dot')} Новых · <b>{summary.get('registered', 0)}</b>\n"
+        f"{e('warn')} Без отправителя · <b>{summary.get('unattributed', 0)}</b>\n"
+        f"{e('time')} Уже были · <b>{summary.get('duplicate', 0)}</b>"
+    )

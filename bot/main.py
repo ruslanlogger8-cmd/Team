@@ -67,7 +67,9 @@ async def _report_stuck(bot: Bot, db: Database, config: Config) -> None:
             logger.warning("Не удалось уведомить админа %s о зависших заявках", admin_id)
 
 
-async def _start_gifts(db: Database, config: Config, bot: Bot) -> list[asyncio.Task]:
+async def _start_gifts(
+    db: Database, config: Config, bot: Bot, dp: Dispatcher
+) -> list[asyncio.Task]:
     """Поднимает подсистему подарков, если она включена.
 
     Сбой здесь не должен ронять выплатной бот: он самодостаточен и работает
@@ -139,10 +141,28 @@ async def _start_gifts(db: Database, config: Config, bot: Bot) -> list[asyncio.T
             text = f"{head}\n{e('profile')} Воркер · <code>{gift.from_user_id}</code>\n\n{when}"
         await notify(bot, config, text)
 
+    # Подарки, полученные до запуска, слушатель не видит — забираем их списком.
+    try:
+        existing = await watcher.list_saved_gifts()
+        summary = await service.sync_existing(existing)
+        if summary.get("registered") or summary.get("unattributed"):
+            logger.info(
+                "Синхронизация: новых %s, без отправителя %s, уже было %s",
+                summary.get("registered", 0),
+                summary.get("unattributed", 0),
+                summary.get("duplicate", 0),
+            )
+    except Exception as exc:  # noqa: BLE001 — не критично для запуска
+        logger.warning("Синхронизация подарков не удалась: %s", exc)
+
     tasks = [
         asyncio.create_task(watcher.start(on_gift), name="gift-watcher"),
         asyncio.create_task(run_poller(service, config, bot), name="gift-poller"),
     ]
+    # Хендлеры получают их по имени аргумента — команда /sync дёргает
+    # те же объекты, что и фоновый цикл.
+    dp.workflow_data.update(gift_watcher=watcher, gift_service=service)
+
     logger.info("Подсистема подарков запущена: доля воркера %s%%", config.worker_share_percent)
     return tasks
 
@@ -182,7 +202,7 @@ async def main() -> None:
         await _set_commands(bot)
         await _report_stuck(bot, db, config)
 
-        background = await _start_gifts(db, config, bot)
+        background = await _start_gifts(db, config, bot, dp)
 
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("Бот запущен, ожидаю сообщения")

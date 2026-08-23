@@ -101,5 +101,40 @@ class GiftWatcher:
         logger.info("Вотчер подарков запущен на аккаунте @%s", me.username or me.id)
         await self._client.run_until_disconnected()
 
+    async def list_saved_gifts(self, limit: int = 100) -> list[IncomingGift]:
+        """Перечисляет подарки, уже лежащие на аккаунте.
+
+        Слушатель ловит только то, что приходит при работающем боте. Подарки,
+        полученные до запуска или во время простоя, видны лишь так.
+        """
+        from telethon.tl import functions, types
+
+        me = await self._client.get_input_entity("me")
+        collected: list[IncomingGift] = []
+        offset = ""
+
+        while True:
+            result = await self._client(
+                functions.payments.GetSavedStarGiftsRequest(
+                    peer=me, offset=offset, limit=limit
+                )
+            )
+            for saved in result.gifts:
+                sender_id = None
+                from_id = getattr(saved, "from_id", None)
+                if isinstance(from_id, types.PeerUser):
+                    sender_id = from_id.user_id
+
+                gift = parse_gift_action(saved, sender_id)
+                if gift is not None:
+                    collected.append(gift)
+
+            offset = getattr(result, "next_offset", None) or ""
+            if not offset or not result.gifts:
+                break
+
+        logger.info("На аккаунте найдено уникальных подарков: %s", len(collected))
+        return collected
+
     async def stop(self) -> None:
         await self._client.disconnect()
