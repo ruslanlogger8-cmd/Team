@@ -8,11 +8,11 @@ from ..config import Config
 from ..db import Database
 from ..emoji import e, esc
 from ..payout import execute_payout
+from ..ui import RULE
 from ..utils import fmt_ton
 from .service import GiftService
 
 logger = logging.getLogger(__name__)
-RULE = "━━━━━━━━━━━━━━━━━━━━"
 
 
 async def run_poller(

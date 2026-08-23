@@ -12,11 +12,10 @@ from ..db import Database
 from ..emoji import e, esc, premium_enabled
 from ..keyboards import admin_menu, back_menu
 from ..payout import execute_payout
-from ..ui import safe_edit
+from ..ui import RULE, safe_edit
 from ..utils import fmt_ton, parse_ton
 
 router = Router()
-RULE = "━━━━━━━━━━━━━━━━━━━━"
 
 
 def _is_admin(user_id: int, config: Config) -> bool:

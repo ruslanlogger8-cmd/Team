@@ -48,3 +48,23 @@ class TestNoHardcodedSecrets:
             if line.startswith("BOT_TOKEN=") or line.startswith("WALLET_MNEMONIC="):
                 value = line.split("=", 1)[1].strip()
                 assert value in ("", "word1 word2 ... word24"), f"реальное значение в .env.example: {line}"
+
+
+def test_rule_is_single_and_short():
+    """Разделитель — один на весь бот и не длиннее ширины экрана телефона.
+
+    Длинная линия переносится на вторую строку и выглядит как обрывок,
+    а три копии константы разъезжаются при правке.
+    """
+    from bot.ui import RULE
+
+    assert set(RULE) == {"━"}
+    assert len(RULE) <= 12, "линия переносится на телефоне"
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "bot"
+    duplicates = [
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*.py")
+        if path.name != "ui.py" and 'RULE = "' in path.read_text(encoding="utf-8")
+    ]
+    assert not duplicates, f"копии RULE вне bot/ui.py: {duplicates}"

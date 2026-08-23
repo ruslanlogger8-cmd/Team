@@ -19,14 +19,13 @@ from ..keyboards import (
 )
 from ..payout import execute_payout
 from ..states import ClaimForm, WalletForm, WithdrawForm
-from ..ui import reset_state, safe_edit, send_screen
+from ..ui import RULE, reset_state, safe_edit, send_screen
 from ..utils import fmt_ton, is_valid_ton_address, parse_ton
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 PER_PAGE = 5
-RULE = "━━━━━━━━━━━━━━━━━━━━"
 MEDALS = ("gold", "silver", "bronze")
 STATUS = {
     "paid": ("check", "выплачено"),
