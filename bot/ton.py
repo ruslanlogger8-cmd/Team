@@ -67,6 +67,7 @@ class TonPayer:
         self._comment = config.payout_comment
         self._connected = False
         self._wallet = None
+        self._testnet = config.is_testnet
 
         if self._version == "auto":
             # Адреса известны сразу, а какой из них живой — выяснится при старте.
@@ -127,8 +128,23 @@ class TonPayer:
             await self._detect_version()
 
     async def prepare(self) -> None:
-        """Ранняя проверка при старте: адрес в логе до первой выплаты."""
+        """Ранняя проверка при старте: адрес, сеть и баланс до первой выплаты."""
         await self._ensure_connected()
+        try:
+            await self._wallet.refresh()
+            balance = int(self._wallet.balance or 0)
+            network = "TESTNET" if self._testnet else "MAINNET"
+            logger.info(
+                "Сеть: %s | баланс: %s | контракт развёрнут: %s",
+                network, fmt_ton(balance), not bool(self._wallet.is_uninit),
+            )
+            if balance <= 0:
+                logger.warning(
+                    "На кошельке пусто в сети %s. Балансы testnet и mainnet НЕ связаны: "
+                    "пополнение в одной сети не видно в другой.", network,
+                )
+        except Exception as exc:  # noqa: BLE001 — диагностика не должна мешать старту
+            logger.warning("Не удалось прочитать состояние кошелька: %s", exc)
 
     async def send(self, destination: str, amount_nano: int) -> str:
         """Переводит amount_nano нанотонов. Возвращает хэш транзакции.
@@ -142,12 +158,25 @@ class TonPayer:
 
         balance = int(self._wallet.balance or 0)
         needed = amount_nano + GAS_RESERVE_NANO
-        if balance < needed:
+        uninit = bool(self._wallet.is_uninit)
+
+        if balance <= 0:
+            # У неразвёрнутого аккаунта состояние читается не всегда, и ноль
+            # здесь может означать «не смогли прочитать», а не «пусто».
+            # Отказывать по недостоверному показанию нельзя — пусть решает сеть.
+            logger.warning(
+                "Баланс кошелька %s прочитан как 0 (развёрнут: %s). Пробую отправить — "
+                "если денег действительно нет, сеть откажет.",
+                self.address, not uninit,
+            )
+        elif balance < needed:
             raise RuntimeError(
                 f"на горячем кошельке {fmt_ton(balance)}, а нужно минимум "
                 f"{fmt_ton(needed)} — сумма выплаты плюс комиссия сети. "
                 f"Пополни {self.address}"
             )
+        else:
+            logger.info("Баланс кошелька: %s, выплата %s", fmt_ton(balance), fmt_ton(amount_nano))
 
         # Адрес кошелька существует сразу, но сам контракт появляется в сети
         # только с первой ИСХОДЯЩЕЙ транзакцией. Пополнение его не разворачивает,
