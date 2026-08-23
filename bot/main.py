@@ -80,16 +80,34 @@ async def _start_gifts(db: Database, config: Config, bot: Bot) -> list[asyncio.T
     try:
         from .gifts.market import Market
         from .gifts.poller import run_poller
+        from .gifts.session import MRKT_SESSION_NAME, restore_mrkt_session
         from .gifts.service import GiftService
         from .gifts.watcher import GiftWatcher
     except ImportError as exc:
         logger.error("Подарки не запущены, нет зависимостей: %s", exc)
         return []
 
-    market = Market(config.tg_api_id, config.tg_api_hash, session_name="mrkt")
-    await market.__aenter__()
-    service = GiftService(db, config, market)
+    try:
+        restore_mrkt_session(config)
+        market = Market(
+            config.tg_api_id, config.tg_api_hash,
+            session_name=MRKT_SESSION_NAME, workdir=config.mrkt_workdir,
+        )
+        await market.__aenter__()
+    except Exception as exc:  # noqa: BLE001 — выплаты обязаны пережить это
+        logger.error("=" * 64)
+        logger.error("Подсистема подарков НЕ запущена: %s", exc)
+        logger.error("Бот продолжает работать как выплатной — выплаты не затронуты.")
+        if "phone number" in str(exc) or isinstance(exc, EOFError):
+            logger.error(
+                "Причина: у MRKT нет файла сессии, и он пытается спросить телефон "
+                "в консоли, которой на сервере нет. Сгенерируй сессию локально "
+                "(python scripts/gen_mrkt_session.py) и положи её в MRKT_SESSION_B64."
+            )
+        logger.error("=" * 64)
+        return []
 
+    service = GiftService(db, config, market)
     watcher = GiftWatcher(config.tg_api_id, config.tg_api_hash, config.tg_session)
 
     async def on_gift(gift) -> None:

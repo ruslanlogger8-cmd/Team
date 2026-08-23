@@ -73,6 +73,7 @@ class Config:
     min_list_price_nano: int
     allow_collection_floor: bool
     gifts_poll_sec: int
+    mrkt_workdir: str
     payout_comment: str = field(default="payout")
 
     @staticmethod
@@ -152,5 +153,7 @@ class Config:
             allow_collection_floor=os.environ.get("ALLOW_COLLECTION_FLOOR", "false").lower()
             in ("1", "true", "yes"),
             gifts_poll_sec=_int_env("GIFTS_POLL_SEC", 120, 30, 3600),
+            mrkt_workdir=os.environ.get("MRKT_WORKDIR", "").strip()
+            or os.path.dirname(os.path.abspath(os.environ.get("DB_PATH", "payouts.db"))),
             payout_comment=os.environ.get("PAYOUT_COMMENT", "payout").strip() or "payout",
         )
