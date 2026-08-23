@@ -96,7 +96,11 @@ async def _notify(source, user_id: int, text: str) -> bool:
 
 async def _auto_payout(message: Message, db: Database, config: Config, payer, user_id: int) -> None:
     """Отправляет баланс сразу после начисления, без действий работника."""
-    result = await execute_payout(db, payer, user_id, config.min_withdraw_nano)
+    result = await execute_payout(
+        db, payer, user_id, config.min_withdraw_nano,
+        max_single_nano=config.max_payout_nano,
+        max_daily_nano=config.max_daily_payout_nano,
+    )
 
     if result.status == "skipped":
         worker = await db.get_worker(user_id)
@@ -105,6 +109,15 @@ async def _auto_payout(message: Message, db: Database, config: Config, payer, us
             else f"баланс ниже минимума {fmt_ton(config.min_withdraw_nano)}"
         )
         await message.answer(f"{e('time')} Автовыплата отложена · {reason}")
+        return
+
+    if result.status == "blocked":
+        await message.answer(
+            f"{e('shield')} <b>Автовыплата остановлена лимитом</b>\n"
+            f"{RULE}\n"
+            f"{e('dot')} {esc(result.error)}\n"
+            f"{e('check')} Средства остались на балансе воркера."
+        )
         return
 
     if result.status == "failed":

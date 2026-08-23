@@ -58,6 +58,8 @@ class Config:
     is_testnet: bool
     toncenter_api_key: str
     min_withdraw_nano: int
+    max_payout_nano: int
+    max_daily_payout_nano: int
     db_path: str
     dry_run: bool
     use_premium_emoji: bool
@@ -139,6 +141,10 @@ class Config:
             is_testnet=os.environ.get("TON_TESTNET", "false").lower() in ("1", "true", "yes"),
             toncenter_api_key=os.environ.get("TONCENTER_API_KEY", "").strip(),
             min_withdraw_nano=int(round(min_ton * 1_000_000_000)),
+            max_payout_nano=int(round(_float_env("MAX_PAYOUT_TON", 50.0) * 1_000_000_000)),
+            max_daily_payout_nano=int(
+                round(_float_env("MAX_DAILY_PAYOUT_TON", 300.0) * 1_000_000_000)
+            ),
             db_path=os.environ.get("DB_PATH", "payouts.db"),
             dry_run=dry_run,
             use_premium_emoji=os.environ.get("USE_PREMIUM_EMOJI", "true").lower() in ("1", "true", "yes"),

@@ -408,7 +408,9 @@ async def withdraw_confirm(
     await safe_edit(call, f"{e('time')} <b>Отправляю перевод…</b>")
 
     result = await execute_payout(
-        db, payer, call.from_user.id, config.min_withdraw_nano, amount_nano
+        db, payer, call.from_user.id, config.min_withdraw_nano, amount_nano,
+        max_single_nano=config.max_payout_nano,
+        max_daily_nano=config.max_daily_payout_nano,
     )
 
     if result.status == "skipped":
@@ -420,6 +422,19 @@ async def withdraw_confirm(
             f"или прошлая заявка ещё в обработке.",
             back_menu(),
         )
+        return
+
+    if result.status == "blocked":
+        await safe_edit(
+            call,
+            f"{e('shield')} <b>Выплата остановлена лимитом</b>\n"
+            f"{RULE}\n"
+            f"{e('dot')} {esc(result.error)}\n\n"
+            f"{e('check')} Средства остались на балансе.\n"
+            f"{e('dot')} Напиши администратору.",
+            back_menu(),
+        )
+        await _alert_admins(call.bot, config, result, call.from_user.id)
         return
 
     if result.status == "failed":
@@ -452,8 +467,12 @@ async def withdraw_confirm(
 
 
 async def _alert_admins(bot, config: Config, result, user_id: int) -> None:
+    head = (
+        "Выплата остановлена лимитом" if result.status == "blocked"
+        else "Выплата не прошла"
+    )
     text = (
-        f"{e('warn')} <b>Выплата не прошла</b>\n"
+        f"{e('warn')} <b>{head}</b>\n"
         f"{RULE}\n"
         f"{e('dot')} Заявка №{result.withdrawal_id}\n"
         f"{e('coin')} {fmt_ton(result.amount_nano)}\n"

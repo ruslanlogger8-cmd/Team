@@ -477,6 +477,15 @@ class Database:
             "revenue_nano": sum(v[1] for v in rows.values()),
         }
 
+    async def paid_since(self, since_ts: int) -> int:
+        """Сколько нанотонов реально выплачено с указанного момента."""
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(amount_nano),0) AS s FROM withdrawals "
+            "WHERE status='paid' AND finished_at >= ?",
+            (since_ts,),
+        )
+        return (await cur.fetchone())["s"]
+
     async def find_stuck_withdrawals(self, older_than_sec: int = 300) -> list[tuple[int, int, int, str]]:
         """Заявки, зависшие в 'processing' — процесс умер между резервом и отправкой.
 
