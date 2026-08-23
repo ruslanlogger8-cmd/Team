@@ -40,10 +40,11 @@ class SaleResult:
 
 
 class GiftService:
-    def __init__(self, db: Database, config: Config, market=None) -> None:
+    def __init__(self, db: Database, config: Config, market=None, depositor=None) -> None:
         self._db = db
         self._config = config
         self._market = market
+        self._depositor = depositor
 
     async def register(self, gift: IncomingGift) -> str:
         """Записывает поступивший подарок. Повторный slug отбрасывается —
@@ -78,6 +79,32 @@ class GiftService:
             allow_collection_floor=self._config.allow_collection_floor,
         )
 
+    async def deposit_ready_gifts(self) -> list[tuple[str, str]]:
+        """Передаёт на аккаунт MRKT подарки, вышедшие из кулдауна.
+
+        Без этого шага подарок остаётся на аккаунте и на маркете не появится.
+        Возвращает (slug, исход) — исход 'deposited' либо текст ошибки.
+        """
+        if self._depositor is None:
+            return []
+
+        results: list[tuple[str, str]] = []
+        for row in await self._db.gifts_by_status("received", ready_only=True):
+            slug = row["slug"]
+            if row["worker_id"] is None:
+                continue        # некому платить — не отдаём на маркет
+
+            try:
+                await self._depositor.deposit(slug)
+            except Exception as exc:  # noqa: BLE001 — кулдаун, нехватка Stars и т.п.
+                logger.warning("Подарок %s не передан на MRKT: %s", slug, exc)
+                results.append((slug, str(exc)))
+                continue
+
+            await self._db.mark_gift_deposited(slug)
+            results.append((slug, "deposited"))
+        return results
+
     async def list_ready_gifts(self) -> list[ListingResult]:
         """Выставляет подарки, вышедшие из кулдауна и имеющие цену.
 
@@ -90,7 +117,7 @@ class GiftService:
         inventory = {item.slug: item for item in await self._market.inventory() if item.slug}
         results: list[ListingResult] = []
 
-        for row in await self._db.gifts_by_status("received", ready_only=True):
+        for row in await self._db.gifts_by_status("deposited"):
             slug = row["slug"]
             if row["worker_id"] is None:
                 continue

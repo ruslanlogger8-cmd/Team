@@ -67,6 +67,16 @@ class GiftWatcher:
 
         self._client = TelegramClient(StringSession(session), api_id, api_hash)
 
+    @property
+    def client(self):
+        """Тот же MTProto-клиент используется для передачи подарков на MRKT."""
+        return self._client
+
+    async def connect(self) -> None:
+        """Поднимает соединение до запуска слушателя — нужно депозитору."""
+        if not self._client.is_connected():
+            await self._client.start()
+
     async def start(self, on_gift: Callable[[IncomingGift], Awaitable[None]]) -> None:
         from telethon import events
         from telethon.tl import types

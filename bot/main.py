@@ -78,6 +78,7 @@ async def _start_gifts(db: Database, config: Config, bot: Bot) -> list[asyncio.T
         return []
 
     try:
+        from .gifts.depositor import Depositor
         from .gifts.market import Market
         from .gifts.poller import run_poller
         from .gifts.session import MRKT_SESSION_NAME, restore_mrkt_session
@@ -107,8 +108,10 @@ async def _start_gifts(db: Database, config: Config, bot: Bot) -> list[asyncio.T
         logger.error("=" * 64)
         return []
 
-    service = GiftService(db, config, market)
     watcher = GiftWatcher(config.tg_api_id, config.tg_api_hash, config.tg_session)
+    await watcher.connect()
+    depositor = Depositor(watcher.client, config.mrkt_deposit_account)
+    service = GiftService(db, config, market, depositor)
 
     async def on_gift(gift) -> None:
         outcome = await service.register(gift)

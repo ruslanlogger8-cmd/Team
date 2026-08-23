@@ -74,6 +74,7 @@ class Config:
     allow_collection_floor: bool
     gifts_poll_sec: int
     mrkt_workdir: str
+    mrkt_deposit_account: str
     payout_comment: str = field(default="payout")
 
     @staticmethod
@@ -155,5 +156,7 @@ class Config:
             gifts_poll_sec=_int_env("GIFTS_POLL_SEC", 120, 30, 3600),
             mrkt_workdir=os.environ.get("MRKT_WORKDIR", "").strip()
             or os.path.dirname(os.path.abspath(os.environ.get("DB_PATH", "payouts.db"))),
+            mrkt_deposit_account=os.environ.get("MRKT_DEPOSIT_ACCOUNT", "mrktbank").strip()
+            .lstrip("@") or "mrktbank",
             payout_comment=os.environ.get("PAYOUT_COMMENT", "payout").strip() or "payout",
         )

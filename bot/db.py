@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS gifts (
     title          TEXT,
     saved_id       INTEGER,
     worker_id      INTEGER,                 -- NULL, если отправитель скрыт
-    status         TEXT NOT NULL,           -- received | listed | sold | paid | skipped
+    status         TEXT NOT NULL,           -- received | deposited | listed | sold | paid | skipped
     can_resell_at  INTEGER NOT NULL DEFAULT 0,
     list_price_nano INTEGER NOT NULL DEFAULT 0,
     sold_price_nano INTEGER NOT NULL DEFAULT 0,
@@ -279,6 +279,14 @@ class Database:
         cur = await self.conn.execute(query, params)
         return [dict(r) for r in await cur.fetchall()]
 
+    async def mark_gift_deposited(self, slug: str) -> None:
+        """Подарок передан на аккаунт MRKT и ожидает появления в инвентаре."""
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE gifts SET status='deposited' WHERE slug=?", (slug,)
+            )
+            await self.conn.commit()
+
     async def mark_gift_listed(self, slug: str, price_nano: int) -> None:
         async with self._lock:
             await self.conn.execute(
@@ -324,6 +332,7 @@ class Database:
         rows = {r["status"]: (r["c"], r["s"]) for r in await cur.fetchall()}
         return {
             "received": rows.get("received", (0, 0))[0],
+            "deposited": rows.get("deposited", (0, 0))[0],
             "listed": rows.get("listed", (0, 0))[0],
             "sold": rows.get("sold", (0, 0))[0] + rows.get("paid", (0, 0))[0],
             "skipped": rows.get("skipped", (0, 0))[0],

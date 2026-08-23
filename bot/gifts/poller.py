@@ -18,6 +18,19 @@ async def run_poller(service: GiftService, config: Config, bot=None) -> None:
     logger.info("Опрос MRKT каждые %s сек", config.gifts_poll_sec)
     while True:
         try:
+            for slug, outcome in await service.deposit_ready_gifts():
+                if outcome == "deposited":
+                    logger.info("Подарок %s передан на MRKT", slug)
+                    await notify(
+                        bot, config,
+                        f"{e('next')} <b>Подарок отправлен на MRKT</b>\n"
+                        f"{RULE}\n"
+                        f"{e('dot')} <code>{esc(slug)}</code>\n"
+                        f"{e('time')} Появится в инвентаре — выставим на продажу",
+                    )
+                else:
+                    logger.warning("Подарок %s не передан: %s", slug, outcome)
+
             for listing in await service.list_ready_gifts():
                 logger.info(
                     "Выставлен %s за %s (флор %s, %s)",

@@ -26,6 +26,19 @@ def item(slug="g-1", floor_bm=0, floor_col=0, locked=False, on_sale=False):
     )
 
 
+class FakeDepositor:
+    """Заглушка передачи подарка на аккаунт MRKT."""
+
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.sent: list[str] = []
+
+    async def deposit(self, slug):
+        if self.fail:
+            raise RuntimeError("подарок ещё в кулдауне")
+        self.sent.append(slug)
+
+
 class FakeMarket:
     def __init__(self, items=None, comparable=0, fail_listing=False):
         self.items = {i.slug: i for i in (items or [])}
@@ -183,8 +196,9 @@ class TestListing:
     async def test_lists_using_backdrop_model_floor(self, db):
         await _worker(db)
         market = FakeMarket([item("g-1", floor_bm=ton_to_nano("10"))])
-        service = GiftService(db, Cfg(), market)
+        service = GiftService(db, Cfg(), market, FakeDepositor())
         await service.register(gift())
+        await service.deposit_ready_gifts()
 
         listed = await service.list_ready_gifts()
         assert [(r.slug, r.price_nano) for r in listed] == [("g-1", ton_to_nano("9.7"))]
@@ -196,8 +210,9 @@ class TestListing:
         market = FakeMarket([
             item("g-1", floor_bm=ton_to_nano("40"), floor_col=ton_to_nano("3"))
         ])
-        service = GiftService(db, Cfg(), market)
+        service = GiftService(db, Cfg(), market, FakeDepositor())
         await service.register(gift())
+        await service.deposit_ready_gifts()
 
         (listing,) = await service.list_ready_gifts()
         assert listing.price_nano == ton_to_nano("38.8")
@@ -206,18 +221,20 @@ class TestListing:
         """Есть только флор коллекции — выставлять вслепую нельзя."""
         await _worker(db)
         market = FakeMarket([item("g-1", floor_col=ton_to_nano("3"))])
-        service = GiftService(db, Cfg(), market)
+        service = GiftService(db, Cfg(), market, FakeDepositor())
         await service.register(gift())
+        await service.deposit_ready_gifts()
 
         assert await service.list_ready_gifts() == []
-        assert (await db.get_gift("g-1"))["status"] == "received"
+        assert (await db.get_gift("g-1"))["status"] == "deposited"
 
     async def test_falls_back_to_comparable_search(self, db):
         """Если MRKT не отдал флор, берём самый дешёвый лот с теми же атрибутами."""
         await _worker(db)
         market = FakeMarket([item("g-1")], comparable=ton_to_nano("20"))
-        service = GiftService(db, Cfg(), market)
+        service = GiftService(db, Cfg(), market, FakeDepositor())
         await service.register(gift())
+        await service.deposit_ready_gifts()
 
         (listing,) = await service.list_ready_gifts()
         assert listing.price_nano == ton_to_nano("19.4")
@@ -225,38 +242,53 @@ class TestListing:
     async def test_gift_in_cooldown_not_listed(self, db):
         await _worker(db)
         market = FakeMarket([item("g-1", floor_bm=ton_to_nano("10"))])
-        service = GiftService(db, Cfg(), market)
+        service = GiftService(db, Cfg(), market, FakeDepositor())
         await service.register(gift(cooldown=int(time.time()) + 86400))
+        assert await service.deposit_ready_gifts() == []
         assert await service.list_ready_gifts() == []
 
     async def test_locked_gift_not_listed(self, db):
         await _worker(db)
         market = FakeMarket([item("g-1", floor_bm=ton_to_nano("10"), locked=True)])
-        service = GiftService(db, Cfg(), market)
+        service = GiftService(db, Cfg(), market, FakeDepositor())
         await service.register(gift())
+        await service.deposit_ready_gifts()
         assert await service.list_ready_gifts() == []
 
     async def test_unattributed_gift_not_listed(self, db):
         """Продав подарок без привязки, мы не узнаем, кому платить."""
         market = FakeMarket([item("g-1", floor_bm=ton_to_nano("10"))])
-        service = GiftService(db, Cfg(), market)
+        service = GiftService(db, Cfg(), market, FakeDepositor())
         await service.register(gift(sender=None))
+        assert await service.deposit_ready_gifts() == []
         assert await service.list_ready_gifts() == []
 
     async def test_gift_absent_from_market_waits(self, db):
+        """Передан, но в инвентаре ещё не появился — ждём следующего круга."""
         await _worker(db)
-        service = GiftService(db, Cfg(), FakeMarket([]))
+        service = GiftService(db, Cfg(), FakeMarket([]), FakeDepositor())
         await service.register(gift())
+        await service.deposit_ready_gifts()
         assert await service.list_ready_gifts() == []
+        assert (await db.get_gift("g-1"))["status"] == "deposited"
+
+    async def test_deposit_failure_keeps_gift_for_retry(self, db):
+        """Кулдаун или нехватка Stars — подарок остаётся, попробуем позже."""
+        await _worker(db)
+        service = GiftService(db, Cfg(), FakeMarket([]), FakeDepositor(fail=True))
+        await service.register(gift())
+        (slug, outcome), = await service.deposit_ready_gifts()
+        assert slug == "g-1" and outcome != "deposited"
         assert (await db.get_gift("g-1"))["status"] == "received"
 
     async def test_listing_failure_keeps_state(self, db):
         await _worker(db)
         market = FakeMarket([item("g-1", floor_bm=ton_to_nano("10"))], fail_listing=True)
-        service = GiftService(db, Cfg(), market)
+        service = GiftService(db, Cfg(), market, FakeDepositor())
         await service.register(gift())
+        await service.deposit_ready_gifts()
         assert await service.list_ready_gifts() == []
-        assert (await db.get_gift("g-1"))["status"] == "received"
+        assert (await db.get_gift("g-1"))["status"] == "deposited"
 
 
 # ─── Продажа и доля ────────────────────────────────────────────────────
@@ -265,8 +297,9 @@ class TestSales:
     async def _listed(self, db, floor="10"):
         await _worker(db)
         market = FakeMarket([item("g-1", floor_bm=ton_to_nano(floor))])
-        service = GiftService(db, Cfg(), market)
+        service = GiftService(db, Cfg(), market, FakeDepositor())
         await service.register(gift())
+        await service.deposit_ready_gifts()
         await service.list_ready_gifts()
         return market, service
 
