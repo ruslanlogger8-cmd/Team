@@ -1,6 +1,6 @@
-"""Обёртка над amrkt: инвентарь, флор, выставление и детект продажи.
+"""Обёртка над amrkt: инвентарь, флоры, выставление, детект продажи.
 
-Все цены в API MRKT — нанотоны, как и внутри бота, поэтому конвертация не нужна.
+Цены в API MRKT — нанотоны, как и внутри бота, конвертация не нужна.
 """
 from __future__ import annotations
 
@@ -12,11 +12,32 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class InventoryItem:
-    gift_id: str          # идентификатор внутри MRKT
-    slug: str             # slug подарка Telegram — по нему матчим со своей БД
+    market_id: str                # идентификатор позиции внутри MRKT
+    slug: str                     # имя подарка Telegram, ключ для нашей БД
     title: str
+    collection: str
+    model: str
+    backdrop: str
+    floor_backdrop_model_nano: int  # флор по связке «модель + фон» — главный ориентир
+    floor_collection_nano: int      # флор по всей коллекции — занижает редкие атрибуты
     on_sale: bool
+    locked: bool                    # залочен маркетом (кулдаун, вывод и т.п.)
     price_nano: int
+
+    @property
+    def sellable(self) -> bool:
+        return not self.locked and not self.on_sale
+
+
+def _int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _str(value) -> str:
+    return str(value) if value else ""
 
 
 class Market:
@@ -38,59 +59,65 @@ class Market:
         await self._client.__aexit__(*exc)
 
     @staticmethod
-    def _slug_of(item) -> str:
-        """slug у MRKT может лежать в разных полях в зависимости от версии API."""
-        for attr in ("slug", "name", "gift_slug", "telegram_slug"):
-            value = getattr(item, attr, None)
+    def to_item(gift) -> InventoryItem:
+        """Приводит модель amrkt к нашей. Имена полей у MRKT менялись,
+        поэтому slug ищем по нескольким вариантам."""
+        slug = ""
+        for attr in ("name", "slug", "gift_id_string", "gift_slug"):
+            value = getattr(gift, attr, None)
             if isinstance(value, str) and value:
-                return value
-        return ""
+                slug = value
+                break
+        return InventoryItem(
+            market_id=_str(getattr(gift, "id", "")),
+            slug=slug,
+            title=_str(getattr(gift, "title", None)),
+            collection=_str(getattr(gift, "collection_name", None)),
+            model=_str(getattr(gift, "model_name", None)),
+            backdrop=_str(getattr(gift, "backdrop_name", None)),
+            floor_backdrop_model_nano=_int(getattr(gift, "floor_price_by_backdrop_model", 0)),
+            floor_collection_nano=_int(getattr(gift, "floor_price_by_collection", 0)),
+            on_sale=bool(getattr(gift, "is_on_sale", False)),
+            locked=bool(
+                getattr(gift, "is_locked", False) or getattr(gift, "is_locked_for_sale", False)
+            ),
+            price_nano=_int(getattr(gift, "sale_price", 0)),
+        )
 
     async def inventory(self) -> list[InventoryItem]:
-        items = await self._client.get_inventory()
-        result = []
-        for item in items:
-            result.append(
-                InventoryItem(
-                    gift_id=str(getattr(item, "id", "")),
-                    slug=self._slug_of(item),
-                    title=str(getattr(item, "title", "") or ""),
-                    on_sale=bool(getattr(item, "on_sale", False) or getattr(item, "price", 0)),
-                    price_nano=int(getattr(item, "price", 0) or 0),
-                )
-            )
-        return result
+        gifts = await self._client.get_inventory()
+        return [self.to_item(g) for g in (gifts or [])]
 
-    async def floor_price_nano(self, collection_title: str) -> int:
-        """Минимальная цена по коллекции. 0 — если предложений нет."""
+    async def cheapest_comparable_nano(self, item: InventoryItem) -> int:
+        """Запасной способ узнать флор: ищем самый дешёвый лот с той же
+        моделью и фоном. Нужен, если MRKT не отдал floorPriceByBackdropModel.
+        """
+        if not item.collection:
+            return 0
         try:
-            found = await self._client.search_gifts(query=collection_title, count=20)
-        except TypeError:
-            found = await self._client.search_gifts(collection_title)
-        prices = [
-            int(getattr(g, "price", 0) or 0)
-            for g in (found or [])
-            if int(getattr(g, "price", 0) or 0) > 0
-        ]
+            found = await self._client.search_gifts(
+                collection_names=[item.collection],
+                model_names=[item.model] if item.model else None,
+                backdrop_names=[item.backdrop] if item.backdrop else None,
+                ordering="Price",
+                low_to_high=True,
+                count=5,
+            )
+        except Exception as exc:  # noqa: BLE001 — поиск не критичен
+            logger.warning("Поиск сопоставимых лотов не удался: %s", exc)
+            return 0
+
+        gifts = getattr(found, "gifts", None) or getattr(found, "items", None) or []
+        prices = [_int(getattr(g, "sale_price", 0)) for g in gifts]
+        prices = [p for p in prices if p > 0]
         return min(prices) if prices else 0
 
-    async def list_for_sale(self, market_gift_id: str, price_nano: int) -> bool:
-        result = await self._client.sell_gifts([market_gift_id], [price_nano])
-        logger.info("Выставлен %s за %s нанотон: %s", market_gift_id, price_nano, result)
-        return True
+    async def list_for_sale(self, market_id: str, price_nano: int) -> None:
+        await self._client.sell_gifts([market_id], [price_nano])
 
-    async def cancel(self, market_gift_id: str) -> None:
-        await self._client.cancel_sale([market_gift_id])
+    async def cancel(self, market_id: str) -> None:
+        await self._client.cancel_sale([market_id])
 
     async def balance_nano(self) -> int:
         balance = await self._client.get_balance()
-        return int(getattr(balance, "hard", 0) or 0)
-
-    async def sold_since(self, known_slugs: set[str]) -> list[tuple[str, int]]:
-        """Подарки из known_slugs, которых больше нет в инвентаре — значит проданы.
-
-        Возвращает (slug, цена выставления). Сверка по инвентарю надёжнее ленты
-        активности: лента может отставать или обрезаться пагинацией.
-        """
-        present = {item.slug for item in await self.inventory() if item.slug}
-        return [(slug, 0) for slug in known_slugs if slug not in present]
+        return _int(getattr(balance, "hard", 0))

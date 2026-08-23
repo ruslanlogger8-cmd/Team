@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
@@ -94,16 +95,28 @@ async def _start_gifts(db: Database, config: Config, bot: Bot) -> list[asyncio.T
     async def on_gift(gift) -> None:
         outcome = await service.register(gift)
         logger.info("Подарок %s: %s", gift.slug, outcome)
+        if outcome == "duplicate":
+            return
+
+        from .emoji import e, esc
+        from .gifts.poller import RULE, notify
+
+        head = f"{e('gift')} <b>Пришёл подарок</b>\n{RULE}\n{e('dot')} {esc(gift.title or gift.slug)}"
         if outcome == "unattributed":
-            for admin_id in config.admin_ids:
-                try:
-                    await bot.send_message(
-                        admin_id,
-                        f"Подарок <code>{gift.slug}</code> пришёл без опознания отправителя.\n"
-                        f"Привяжи вручную: <code>/gift {gift.slug} ID_воркера</code>",
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
+            text = (
+                f"{head}\n\n"
+                f"{e('warn')} Отправитель скрыт — привязать не к кому.\n"
+                f"{e('dot')} Подарок НЕ выставится, пока не привяжешь:\n"
+                f"<code>/gift {esc(gift.slug)} ID_воркера</code>"
+            )
+        else:
+            when = (
+                f"{e('time')} Продажа доступна после кулдауна"
+                if gift.can_resell_at > int(time.time())
+                else f"{e('check')} Кулдауна нет, уйдёт в продажу на ближайшем круге"
+            )
+            text = f"{head}\n{e('profile')} Воркер · <code>{gift.from_user_id}</code>\n\n{when}"
+        await notify(bot, config, text)
 
     tasks = [
         asyncio.create_task(watcher.start(on_gift), name="gift-watcher"),
@@ -122,7 +135,11 @@ async def main() -> None:
 
     # Всё после connect() — под try/finally: иначе падение на старте оставляет
     # незакрытый поток aiosqlite, и процесс зависает вместо честного рестарта.
+    # Обе переменные объявлены ДО try: finally читает их в том числе тогда,
+    # когда падение случилось на первой же строке блока. Иначе finally сам
+    # падает с UnboundLocalError и прячет настоящую причину сбоя.
     bot: Bot | None = None
+    background: list[asyncio.Task] = []
     try:
         payer = create_payer(config)
         logger.info("Горячий кошелёк: %s (testnet=%s)", payer.address, config.is_testnet)

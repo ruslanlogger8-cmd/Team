@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from bot.gifts.pricing import listing_price, worker_share
+from bot.gifts.pricing import PriceSource, decide_price, worker_share
 from bot.gifts.service import GiftService
 from bot.gifts.watcher import IncomingGift, parse_gift_action
 from bot.utils import build_ton_address, ton_to_nano
@@ -14,33 +14,35 @@ pytestmark = pytest.mark.asyncio
 
 # ─── Заглушки ──────────────────────────────────────────────────────────
 
-class FakeItem:
-    def __init__(self, gift_id, slug, title="", price=0):
-        self.gift_id, self.slug, self.title = gift_id, slug, title
-        self.on_sale, self.price_nano = bool(price), price
+from bot.gifts.market import InventoryItem
+
+
+def item(slug="g-1", floor_bm=0, floor_col=0, locked=False, on_sale=False):
+    return InventoryItem(
+        market_id=f"m-{slug}", slug=slug, title="Plush Pepe",
+        collection="Plush Pepe", model="Albino", backdrop="Black",
+        floor_backdrop_model_nano=floor_bm, floor_collection_nano=floor_col,
+        on_sale=on_sale, locked=locked, price_nano=0,
+    )
 
 
 class FakeMarket:
-    def __init__(self, items=None, floor=0, fail_listing=False):
+    def __init__(self, items=None, comparable=0, fail_listing=False):
         self.items = {i.slug: i for i in (items or [])}
-        self.floor = floor
+        self.comparable = comparable
         self.fail_listing = fail_listing
         self.listed: list[tuple[str, int]] = []
 
     async def inventory(self):
         return list(self.items.values())
 
-    async def floor_price_nano(self, title):
-        return self.floor
+    async def cheapest_comparable_nano(self, inv_item):
+        return self.comparable
 
-    async def list_for_sale(self, market_gift_id, price_nano):
+    async def list_for_sale(self, market_id, price_nano):
         if self.fail_listing:
             raise RuntimeError("маркет отказал")
-        self.listed.append((market_gift_id, price_nano))
-        return True
-
-    async def sold_since(self, known_slugs):
-        return [(s, 0) for s in known_slugs if s not in self.items]
+        self.listed.append((market_id, price_nano))
 
     def sell(self, slug):
         """Имитирует покупку: подарок пропадает из инвентаря."""
@@ -51,6 +53,7 @@ class Cfg:
     worker_share_percent = 80
     undercut_percent = 3
     min_list_price_nano = ton_to_nano("0.5")
+    allow_collection_floor = False
 
 
 async def _worker(db, uid=1):
@@ -65,6 +68,8 @@ def gift(slug="g-1", sender=1, cooldown=0):
 # ─── Расчёты ───────────────────────────────────────────────────────────
 
 class TestPricing:
+    MIN = ton_to_nano("0.5")
+
     @pytest.mark.parametrize("percent,expected", [(80, "8"), (70, "7"), (100, "10"), (0, "0")])
     async def test_share(self, percent, expected):
         assert worker_share(ton_to_nano("10"), percent) == ton_to_nano(expected)
@@ -78,18 +83,42 @@ class TestPricing:
         with pytest.raises(ValueError):
             worker_share(100, bad)
 
-    async def test_negative_sale_rejected(self):
+    async def test_uses_backdrop_model_floor(self):
+        d = decide_price(ton_to_nano("12"), ton_to_nano("3"), 3, self.MIN, False)
+        assert d.list_it and d.price_nano == ton_to_nano("11.64")
+        assert d.source is PriceSource.BACKDROP_MODEL
+
+    async def test_rare_backdrop_not_sold_at_collection_floor(self):
+        """Ключевая защита: редкий фон стоит 40, коллекция 3 — продаём по 40."""
+        d = decide_price(ton_to_nano("40"), ton_to_nano("3"), 3, self.MIN, False)
+        assert d.price_nano == ton_to_nano("38.8")
+        assert d.price_nano > ton_to_nano("3")
+
+    async def test_refuses_when_only_collection_floor(self):
+        """Флор коллекции занижает редкие атрибуты — вслепую не выставляем."""
+        d = decide_price(0, ton_to_nano("3"), 3, self.MIN, False)
+        assert not d.list_it and "редкие атрибуты" in d.reason
+
+    async def test_collection_floor_allowed_explicitly(self):
+        d = decide_price(0, ton_to_nano("3"), 3, self.MIN, True)
+        assert d.list_it and d.source is PriceSource.COLLECTION
+
+    async def test_refuses_without_any_floor(self):
+        assert not decide_price(0, 0, 3, self.MIN, True).list_it
+
+    async def test_refuses_below_minimum(self):
+        d = decide_price(ton_to_nano("0.4"), 0, 3, self.MIN, False)
+        assert not d.list_it and "ниже порога" in d.reason
+
+    async def test_undercut_zero_lists_at_floor(self):
+        d = decide_price(ton_to_nano("10"), 0, 0, self.MIN, False)
+        assert d.price_nano == ton_to_nano("10")
+
+    @pytest.mark.parametrize("bad", [-1, 100, 150])
+    async def test_bad_undercut_rejected(self, bad):
         with pytest.raises(ValueError):
-            worker_share(-1, 80)
+            decide_price(ton_to_nano("10"), 0, bad, self.MIN, False)
 
-    async def test_listing_undercuts_floor(self):
-        assert listing_price(ton_to_nano("12"), 3, ton_to_nano("1")) == ton_to_nano("11.64")
-
-    async def test_listing_respects_minimum(self):
-        assert listing_price(ton_to_nano("0.4"), 3, ton_to_nano("1")) == ton_to_nano("1")
-
-    async def test_unknown_floor_uses_minimum(self):
-        assert listing_price(0, 3, ton_to_nano("1")) == ton_to_nano("1")
 
 
 # ─── Разбор события ────────────────────────────────────────────────────
@@ -151,40 +180,79 @@ class TestRegister:
 # ─── Выставление ───────────────────────────────────────────────────────
 
 class TestListing:
-    async def test_lists_ready_gift_below_floor(self, db):
+    async def test_lists_using_backdrop_model_floor(self, db):
         await _worker(db)
-        market = FakeMarket([FakeItem("m1", "g-1")], floor=ton_to_nano("10"))
+        market = FakeMarket([item("g-1", floor_bm=ton_to_nano("10"))])
         service = GiftService(db, Cfg(), market)
         await service.register(gift())
 
         listed = await service.list_ready_gifts()
-        assert listed == [("g-1", ton_to_nano("9.7"))]
+        assert [(r.slug, r.price_nano) for r in listed] == [("g-1", ton_to_nano("9.7"))]
         assert (await db.get_gift("g-1"))["status"] == "listed"
+
+    async def test_rare_backdrop_not_dumped_at_collection_floor(self, db):
+        """Главная защита: коллекция стоит 3, фон+модель 40 — выставляем по 40."""
+        await _worker(db)
+        market = FakeMarket([
+            item("g-1", floor_bm=ton_to_nano("40"), floor_col=ton_to_nano("3"))
+        ])
+        service = GiftService(db, Cfg(), market)
+        await service.register(gift())
+
+        (listing,) = await service.list_ready_gifts()
+        assert listing.price_nano == ton_to_nano("38.8")
+
+    async def test_without_narrow_floor_not_listed(self, db):
+        """Есть только флор коллекции — выставлять вслепую нельзя."""
+        await _worker(db)
+        market = FakeMarket([item("g-1", floor_col=ton_to_nano("3"))])
+        service = GiftService(db, Cfg(), market)
+        await service.register(gift())
+
+        assert await service.list_ready_gifts() == []
+        assert (await db.get_gift("g-1"))["status"] == "received"
+
+    async def test_falls_back_to_comparable_search(self, db):
+        """Если MRKT не отдал флор, берём самый дешёвый лот с теми же атрибутами."""
+        await _worker(db)
+        market = FakeMarket([item("g-1")], comparable=ton_to_nano("20"))
+        service = GiftService(db, Cfg(), market)
+        await service.register(gift())
+
+        (listing,) = await service.list_ready_gifts()
+        assert listing.price_nano == ton_to_nano("19.4")
 
     async def test_gift_in_cooldown_not_listed(self, db):
         await _worker(db)
-        market = FakeMarket([FakeItem("m1", "g-1")], floor=ton_to_nano("10"))
+        market = FakeMarket([item("g-1", floor_bm=ton_to_nano("10"))])
         service = GiftService(db, Cfg(), market)
         await service.register(gift(cooldown=int(time.time()) + 86400))
         assert await service.list_ready_gifts() == []
 
+    async def test_locked_gift_not_listed(self, db):
+        await _worker(db)
+        market = FakeMarket([item("g-1", floor_bm=ton_to_nano("10"), locked=True)])
+        service = GiftService(db, Cfg(), market)
+        await service.register(gift())
+        assert await service.list_ready_gifts() == []
+
     async def test_unattributed_gift_not_listed(self, db):
         """Продав подарок без привязки, мы не узнаем, кому платить."""
-        market = FakeMarket([FakeItem("m1", "g-1")], floor=ton_to_nano("10"))
+        market = FakeMarket([item("g-1", floor_bm=ton_to_nano("10"))])
         service = GiftService(db, Cfg(), market)
         await service.register(gift(sender=None))
         assert await service.list_ready_gifts() == []
 
     async def test_gift_absent_from_market_waits(self, db):
         await _worker(db)
-        service = GiftService(db, Cfg(), FakeMarket([], floor=ton_to_nano("10")))
+        service = GiftService(db, Cfg(), FakeMarket([]))
         await service.register(gift())
         assert await service.list_ready_gifts() == []
         assert (await db.get_gift("g-1"))["status"] == "received"
 
     async def test_listing_failure_keeps_state(self, db):
         await _worker(db)
-        market = FakeMarket([FakeItem("m1", "g-1")], floor=ton_to_nano("10"), fail_listing=True)
+        market = FakeMarket([item("g-1", floor_bm=ton_to_nano("10"))], fail_listing=True)
         service = GiftService(db, Cfg(), market)
         await service.register(gift())
         assert await service.list_ready_gifts() == []
@@ -194,53 +262,45 @@ class TestListing:
 # ─── Продажа и доля ────────────────────────────────────────────────────
 
 class TestSales:
-    async def _listed(self, db, market, service):
+    async def _listed(self, db, floor="10"):
         await _worker(db)
+        market = FakeMarket([item("g-1", floor_bm=ton_to_nano(floor))])
+        service = GiftService(db, Cfg(), market)
         await service.register(gift())
         await service.list_ready_gifts()
+        return market, service
 
     async def test_sale_credits_worker_share(self, db):
-        market = FakeMarket([FakeItem("m1", "g-1")], floor=ton_to_nano("10"))
-        service = GiftService(db, Cfg(), market)
-        await self._listed(db, market, service)
-
+        market, service = await self._listed(db)
         market.sell("g-1")
-        sales = await service.collect_sales()
 
+        (sale,) = await service.collect_sales()
         price = ton_to_nano("9.7")
-        share = worker_share(price, 80)
-        assert sales == [("g-1", price, share)]
-        assert (await db.get_worker(1)).balance_nano == share
+        assert sale.sold_nano == price
+        assert sale.share_nano == worker_share(price, 80)
+        assert (await db.get_worker(1)).balance_nano == sale.share_nano
         assert (await db.get_gift("g-1"))["status"] == "paid"
 
     async def test_unsold_gift_not_paid(self, db):
-        market = FakeMarket([FakeItem("m1", "g-1")], floor=ton_to_nano("10"))
-        service = GiftService(db, Cfg(), market)
-        await self._listed(db, market, service)
+        _, service = await self._listed(db)
         assert await service.collect_sales() == []
         assert (await db.get_worker(1)).balance_nano == 0
 
     async def test_sale_counted_once(self, db):
         """Повторный опрос не должен начислить долю второй раз."""
-        market = FakeMarket([FakeItem("m1", "g-1")], floor=ton_to_nano("10"))
-        service = GiftService(db, Cfg(), market)
-        await self._listed(db, market, service)
+        market, service = await self._listed(db)
         market.sell("g-1")
-
         await service.collect_sales()
         first = (await db.get_worker(1)).balance_nano
         assert await service.collect_sales() == []
         assert (await db.get_worker(1)).balance_nano == first
 
     async def test_house_keeps_remainder(self, db):
-        """Воркеру 80%, кассе 20% — сумма сходится ровно."""
-        market = FakeMarket([FakeItem("m1", "g-1")], floor=ton_to_nano("10"))
-        service = GiftService(db, Cfg(), market)
-        await self._listed(db, market, service)
+        market, service = await self._listed(db)
         market.sell("g-1")
-        (_, sold, share), = await service.collect_sales()
-        assert share == worker_share(sold, 80)
-        assert sold - share == sold - int(sold * 0.8)
+        (sale,) = await service.collect_sales()
+        assert sale.share_nano == worker_share(sale.sold_nano, 80)
+        assert sale.sold_nano - sale.share_nano > 0
 
 
 class TestSummary:

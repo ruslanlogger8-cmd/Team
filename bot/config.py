@@ -71,6 +71,7 @@ class Config:
     worker_share_percent: int
     undercut_percent: int
     min_list_price_nano: int
+    allow_collection_floor: bool
     gifts_poll_sec: int
     payout_comment: str = field(default="payout")
 
@@ -148,6 +149,8 @@ class Config:
             worker_share_percent=share,
             undercut_percent=_int_env("UNDERCUT_PERCENT", 3, 0, 99),
             min_list_price_nano=int(round(_float_env("MIN_LIST_PRICE_TON", 0.5) * 1_000_000_000)),
+            allow_collection_floor=os.environ.get("ALLOW_COLLECTION_FLOOR", "false").lower()
+            in ("1", "true", "yes"),
             gifts_poll_sec=_int_env("GIFTS_POLL_SEC", 120, 30, 3600),
             payout_comment=os.environ.get("PAYOUT_COMMENT", "payout").strip() or "payout",
         )
