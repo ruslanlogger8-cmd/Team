@@ -28,6 +28,7 @@ class Config:
     toncenter_api_key: str
     min_withdraw_nano: int
     db_path: str
+    dry_run: bool
     payout_comment: str = field(default="payout")
 
     @staticmethod
@@ -36,11 +37,14 @@ class Config:
         if not token:
             raise RuntimeError("BOT_TOKEN не задан в env")
 
+        dry_run = os.environ.get("DRY_RUN", "false").lower() in ("1", "true", "yes")
+
         mnemonic_raw = os.environ.get("WALLET_MNEMONIC", "").strip()
         mnemonic = mnemonic_raw.split()
-        if len(mnemonic) not in (24, 12):
+        if not dry_run and len(mnemonic) not in (24, 12):
             raise RuntimeError(
-                "WALLET_MNEMONIC должен содержать 24 (или 12) слов seed-фразы горячего кошелька"
+                "WALLET_MNEMONIC должен содержать 24 (или 12) слов seed-фразы горячего кошелька. "
+                "Для демо без кошелька поставь DRY_RUN=true"
             )
 
         admins = _int_set(os.environ.get("ADMIN_IDS", ""))
@@ -57,5 +61,6 @@ class Config:
             toncenter_api_key=os.environ.get("TONCENTER_API_KEY", "").strip(),
             min_withdraw_nano=int(round(min_ton * 1_000_000_000)),
             db_path=os.environ.get("DB_PATH", "payouts.db"),
+            dry_run=dry_run,
             payout_comment=os.environ.get("PAYOUT_COMMENT", "payout").strip() or "payout",
         )

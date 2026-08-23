@@ -13,7 +13,6 @@ from ..config import Config
 from ..db import Database
 from ..keyboards import confirm_withdraw, worker_menu
 from ..states import WalletForm
-from ..ton import TonPayer
 from ..utils import fmt_ton, is_valid_ton_address
 
 logger = logging.getLogger(__name__)
@@ -97,7 +96,7 @@ async def withdraw_cancel(call: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "wd:yes")
-async def withdraw_confirm(call: CallbackQuery, db: Database, config: Config, payer: TonPayer) -> None:
+async def withdraw_confirm(call: CallbackQuery, db: Database, config: Config, payer) -> None:
     user_id = call.from_user.id
     await call.answer()
 

@@ -16,7 +16,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from .config import Config
 from .db import Database
 from .handlers import build_router
-from .ton import TonPayer
+from .ton import create_payer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,7 +31,7 @@ async def main() -> None:
     db = Database(config.db_path)
     await db.connect()
 
-    payer = TonPayer(config)
+    payer = create_payer(config)
     logger.info("Горячий кошелёк: %s (testnet=%s)", payer.address, config.is_testnet)
 
     bot = Bot(
