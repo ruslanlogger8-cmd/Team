@@ -1,8 +1,9 @@
-"""Хендлеры работника: регистрация, баланс, кошелёк, вывод."""
+"""Хендлеры работника: меню, профиль, кошелёк, топ, история, вывод."""
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from aiogram import F, Router
 from aiogram.filters import CommandStart
@@ -11,14 +12,18 @@ from aiogram.types import CallbackQuery, Message
 
 from ..config import Config
 from ..db import Database
-from ..keyboards import confirm_withdraw, worker_menu
+from ..emoji import e, esc
+from ..keyboards import back_menu, confirm_withdraw, history_nav, main_menu
 from ..states import WalletForm
 from ..utils import fmt_ton, is_valid_ton_address
 
 logger = logging.getLogger(__name__)
 router = Router()
 
-# По одному активному выводу на пользователя в рамках процесса (страховка поверх БД-резерва).
+PER_PAGE = 5
+_STATUS = {"paid": "✅ выплачено", "processing": "⏳ в обработке", "failed": "❌ ошибка"}
+
+# Страховка поверх БД-резерва: один активный вывод на пользователя в процессе.
 _user_locks: dict[int, asyncio.Lock] = {}
 
 
@@ -30,69 +35,180 @@ def _lock(user_id: int) -> asyncio.Lock:
     return lock
 
 
+def _dt(ts: int) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%d.%m.%Y %H:%M")
+
+
+async def _show_main(target: Message | CallbackQuery, config: Config, name: str) -> None:
+    text = (
+        f"{e('fire')} <b>Панель выплат</b>\n\n"
+        f"{e('user')} {esc(name)}\n\n"
+        f"Выбери раздел ниже."
+    )
+    keyboard = main_menu(is_admin=_is_admin(target, config))
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=keyboard)
+    else:
+        await target.answer(text, reply_markup=keyboard)
+
+
+def _is_admin(target: Message | CallbackQuery, config: Config) -> bool:
+    return target.from_user.id in config.admin_ids
+
+
 @router.message(CommandStart())
-async def start(message: Message, db: Database) -> None:
+async def start(message: Message, db: Database, config: Config) -> None:
     user = message.from_user
     await db.upsert_worker(user.id, user.username, user.full_name)
-    await message.answer(
-        "Бот выплат. Задай TON-кошелёк через «💼 Кошелёк», "
-        "затем выводи баланс кнопкой «💸 Вывести».",
-        reply_markup=worker_menu(),
-    )
+    await _show_main(message, config, user.full_name)
 
 
-@router.message(F.text == "💰 Баланс")
-async def balance(message: Message, db: Database) -> None:
-    worker = await db.get_worker(message.from_user.id)
+@router.callback_query(F.data == "m:main")
+async def back_to_main(call: CallbackQuery, config: Config, state: FSMContext) -> None:
+    await state.clear()
+    await _show_main(call, config, call.from_user.full_name)
+    await call.answer()
+
+
+@router.callback_query(F.data == "m:profile")
+async def profile(call: CallbackQuery, db: Database) -> None:
+    worker = await db.get_worker(call.from_user.id)
     if worker is None:
-        await message.answer("Нажми /start")
+        await call.answer("Нажми /start", show_alert=True)
         return
-    wallet = worker.wallet or "не задан"
-    await message.answer(f"Баланс: {fmt_ton(worker.balance_nano)}\nКошелёк: <code>{wallet}</code>")
+    paid_total, paid_count = await db.worker_totals(worker.user_id)
+    wallet = f"<code>{esc(worker.wallet)}</code>" if worker.wallet else "не задан"
+    await call.message.edit_text(
+        f"{e('user')} <b>Профиль</b>\n\n"
+        f"{e('id')} ID: <code>{worker.user_id}</code>\n"
+        f"{e('user')} Имя: {esc(worker.full_name)}\n"
+        f"{e('wallet')} Кошелёк: {wallet}\n\n"
+        f"{e('money')} Баланс: <b>{fmt_ton(worker.balance_nano)}</b>\n"
+        f"{e('check')} Выплачено всего: <b>{fmt_ton(paid_total)}</b>\n"
+        f"{e('history')} Выплат: <b>{paid_count}</b>",
+        reply_markup=back_menu(),
+    )
+    await call.answer()
 
 
-@router.message(F.text == "💼 Кошелёк")
-async def wallet_prompt(message: Message, state: FSMContext) -> None:
+@router.callback_query(F.data == "m:balance")
+async def balance(call: CallbackQuery, db: Database, config: Config) -> None:
+    worker = await db.get_worker(call.from_user.id)
+    if worker is None:
+        await call.answer("Нажми /start", show_alert=True)
+        return
+    note = ""
+    if worker.balance_nano < config.min_withdraw_nano:
+        note = f"\n\n{e('warn')} Минимум для вывода: {fmt_ton(config.min_withdraw_nano)}"
+    await call.message.edit_text(
+        f"{e('money')} <b>Баланс</b>\n\n"
+        f"Доступно: <b>{fmt_ton(worker.balance_nano)}</b>{note}",
+        reply_markup=back_menu(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "m:top")
+async def top(call: CallbackQuery, db: Database) -> None:
+    rows = await db.get_top(10)
+    if not rows:
+        body = "Пока никто не получал выплат."
+    else:
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        body = "\n".join(
+            f"{medals.get(i, f'{i}.')} <b>{esc(name)}</b> — {fmt_ton(total)} ({cnt})"
+            for i, (name, total, cnt) in enumerate(rows, 1)
+        )
+    await call.message.edit_text(
+        f"{e('trophy')} <b>Топ-10 по выплатам</b>\n\n{body}", reply_markup=back_menu()
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "m:history")
+@router.callback_query(F.data.startswith("h:"))
+async def history(call: CallbackQuery, db: Database) -> None:
+    if call.data == "h:noop":
+        await call.answer()
+        return
+    page = int(call.data.split(":")[1]) if call.data.startswith("h:") else 1
+
+    total = await db.count_withdrawals(call.from_user.id)
+    total_pages = max(1, -(-total // PER_PAGE))
+    page = min(max(1, page), total_pages)
+    rows = await db.get_withdrawals(call.from_user.id, page, PER_PAGE)
+
+    if not rows:
+        body = "Заявок пока не было."
+    else:
+        body = "\n\n".join(
+            f"<b>#{wid}</b> · {_dt(ts)}\n"
+            f"{fmt_ton(amount)} · {_STATUS.get(status, status)}"
+            + (f"\n<code>{esc(tx)}</code>" if tx else "")
+            for wid, amount, status, tx, ts in rows
+        )
+    await call.message.edit_text(
+        f"{e('history')} <b>История заявок</b>\n\n{body}",
+        reply_markup=history_nav(page, total_pages),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "m:wallet")
+async def wallet_prompt(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(WalletForm.waiting_address)
-    await message.answer("Пришли адрес TON-кошелька (UQ.../EQ...). Он для приёма выплат.")
+    await call.message.edit_text(
+        f"{e('wallet')} <b>Кошелёк</b>\n\n"
+        f"Пришли адрес TON-кошелька (UQ.../EQ...) — на него уходят выплаты.",
+        reply_markup=back_menu(),
+    )
+    await call.answer()
 
 
 @router.message(WalletForm.waiting_address, F.text)
-async def wallet_save(message: Message, state: FSMContext, db: Database) -> None:
+async def wallet_save(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     address = message.text.strip()
     if not is_valid_ton_address(address):
-        await message.answer("Не похоже на TON-адрес. Пришли корректный UQ.../EQ... или отмени /start")
+        await message.answer(
+            f"{e('cross')} Не похоже на TON-адрес. Пришли корректный UQ.../EQ..."
+        )
         return
     await db.set_wallet(message.from_user.id, address)
     await state.clear()
-    await message.answer(f"Кошелёк сохранён:\n<code>{address}</code>", reply_markup=worker_menu())
-
-
-@router.message(F.text == "💸 Вывести")
-async def withdraw_request(message: Message, db: Database, config: Config) -> None:
-    worker = await db.get_worker(message.from_user.id)
-    if worker is None:
-        await message.answer("Нажми /start")
-        return
-    if not worker.wallet:
-        await message.answer("Сначала задай кошелёк через «💼 Кошелёк».")
-        return
-    if worker.balance_nano < config.min_withdraw_nano:
-        await message.answer(
-            f"Минимум для вывода: {fmt_ton(config.min_withdraw_nano)}. "
-            f"Твой баланс: {fmt_ton(worker.balance_nano)}."
-        )
-        return
     await message.answer(
-        f"Вывести {fmt_ton(worker.balance_nano)} на\n<code>{worker.wallet}</code>?",
-        reply_markup=confirm_withdraw(fmt_ton(worker.balance_nano)),
+        f"{e('check')} Кошелёк сохранён:\n<code>{esc(address)}</code>",
+        reply_markup=main_menu(is_admin=message.from_user.id in config.admin_ids),
     )
 
 
-@router.callback_query(F.data == "wd:no")
-async def withdraw_cancel(call: CallbackQuery) -> None:
-    await call.message.edit_text("Отменено.")
+@router.callback_query(F.data == "m:withdraw")
+async def withdraw_request(call: CallbackQuery, db: Database, config: Config) -> None:
+    worker = await db.get_worker(call.from_user.id)
+    if worker is None:
+        await call.answer("Нажми /start", show_alert=True)
+        return
+    if not worker.wallet:
+        await call.answer("Сначала задай кошелёк", show_alert=True)
+        return
+    if worker.balance_nano < config.min_withdraw_nano:
+        await call.answer(
+            f"Минимум {fmt_ton(config.min_withdraw_nano)}, у тебя {fmt_ton(worker.balance_nano)}",
+            show_alert=True,
+        )
+        return
+    await call.message.edit_text(
+        f"{e('send')} <b>Подтверждение вывода</b>\n\n"
+        f"{e('money')} Сумма: <b>{fmt_ton(worker.balance_nano)}</b>\n"
+        f"{e('wallet')} На адрес:\n<code>{esc(worker.wallet)}</code>",
+        reply_markup=confirm_withdraw(fmt_ton(worker.balance_nano)),
+    )
     await call.answer()
+
+
+@router.callback_query(F.data == "wd:no")
+async def withdraw_cancel(call: CallbackQuery, config: Config) -> None:
+    await _show_main(call, config, call.from_user.full_name)
+    await call.answer("Отменено")
 
 
 @router.callback_query(F.data == "wd:yes")
@@ -104,13 +220,14 @@ async def withdraw_confirm(call: CallbackQuery, db: Database, config: Config, pa
         reserved = await db.reserve_withdrawal(user_id, config.min_withdraw_nano)
         if reserved is None:
             await call.message.edit_text(
-                "Не удалось создать заявку: недостаточный баланс, нет кошелька "
-                "или предыдущий вывод ещё в обработке."
+                f"{e('cross')} Заявку создать не удалось: недостаточный баланс, "
+                f"нет кошелька или предыдущий вывод ещё в обработке.",
+                reply_markup=back_menu(),
             )
             return
 
         withdrawal_id, wallet, amount_nano = reserved
-        await call.message.edit_text(f"⏳ Отправляю {fmt_ton(amount_nano)}...")
+        await call.message.edit_text(f"{e('time')} Отправляю {fmt_ton(amount_nano)}...")
 
         try:
             tx_hash = await payer.send(wallet, amount_nano)
@@ -118,20 +235,24 @@ async def withdraw_confirm(call: CallbackQuery, db: Database, config: Config, pa
             logger.exception("Выплата #%s провалилась", withdrawal_id)
             await db.mark_failed_and_refund(withdrawal_id, user_id, amount_nano, repr(exc))
             await call.message.edit_text(
-                "❌ Не удалось отправить. Средства возвращены на баланс, попробуй позже."
+                f"{e('cross')} Отправить не удалось. Средства возвращены на баланс.",
+                reply_markup=back_menu(),
             )
             for admin_id in config.admin_ids:
                 try:
                     await call.bot.send_message(
                         admin_id,
-                        f"⚠️ Выплата #{withdrawal_id} провалена ({fmt_ton(amount_nano)}, "
-                        f"user {user_id}): {exc!r}",
+                        f"{e('warn')} Выплата #{withdrawal_id} провалена "
+                        f"({fmt_ton(amount_nano)}, user {user_id}): {esc(exc)}",
                     )
                 except Exception:  # noqa: BLE001
                     pass
             return
 
         await db.mark_paid(withdrawal_id, tx_hash)
+        demo = f"\n\n{e('warn')} DRY_RUN: реальные TON не отправлены" if config.dry_run else ""
         await call.message.edit_text(
-            f"✅ Отправлено {fmt_ton(amount_nano)}\nTX: <code>{tx_hash}</code>"
+            f"{e('check')} <b>Отправлено {fmt_ton(amount_nano)}</b>\n\n"
+            f"TX: <code>{esc(tx_hash)}</code>{demo}",
+            reply_markup=back_menu(),
         )

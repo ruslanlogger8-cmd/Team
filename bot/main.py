@@ -15,6 +15,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from .config import Config
 from .db import Database
+from .emoji import configure as configure_emoji
 from .handlers import build_router
 from .ton import create_payer
 
@@ -27,6 +28,7 @@ logger = logging.getLogger("payout-bot")
 
 async def main() -> None:
     config = Config.load()
+    configure_emoji(config.use_premium_emoji)
 
     db = Database(config.db_path)
     await db.connect()

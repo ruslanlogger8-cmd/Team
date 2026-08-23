@@ -206,6 +206,54 @@ class Database:
             )
             await self.conn.commit()
 
+    async def get_top(self, limit: int = 10) -> list[tuple[str, int, int]]:
+        """Топ работников по сумме выплаченного. (имя, всего выплачено, кол-во выплат)."""
+        cur = await self.conn.execute(
+            """
+            SELECT w.full_name AS name,
+                   COALESCE(SUM(d.amount_nano), 0) AS total,
+                   COUNT(d.id) AS cnt
+            FROM workers w
+            JOIN withdrawals d ON d.user_id = w.user_id AND d.status = 'paid'
+            GROUP BY w.user_id
+            ORDER BY total DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [(r["name"], r["total"], r["cnt"]) for r in await cur.fetchall()]
+
+    async def count_withdrawals(self, user_id: int) -> int:
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) AS c FROM withdrawals WHERE user_id=?", (user_id,)
+        )
+        return (await cur.fetchone())["c"]
+
+    async def get_withdrawals(
+        self, user_id: int, page: int = 1, per_page: int = 5
+    ) -> list[tuple[int, int, str, str | None, int]]:
+        """Страница истории выводов: (id, сумма, статус, tx_hash, время)."""
+        offset = max(0, (page - 1) * per_page)
+        cur = await self.conn.execute(
+            "SELECT id, amount_nano, status, tx_hash, created_at FROM withdrawals "
+            "WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (user_id, per_page, offset),
+        )
+        return [
+            (r["id"], r["amount_nano"], r["status"], r["tx_hash"], r["created_at"])
+            for r in await cur.fetchall()
+        ]
+
+    async def worker_totals(self, user_id: int) -> tuple[int, int]:
+        """(всего выплачено, количество выплат) по работнику."""
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(amount_nano),0) AS s, COUNT(*) AS c "
+            "FROM withdrawals WHERE user_id=? AND status='paid'",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return row["s"], row["c"]
+
     async def stats(self) -> dict[str, int]:
         cur = await self.conn.execute("SELECT COUNT(*) AS c, COALESCE(SUM(balance_nano),0) AS s FROM workers")
         w = await cur.fetchone()

@@ -5,8 +5,12 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from aiogram.types import CallbackQuery
+
 from ..config import Config
 from ..db import Database
+from ..emoji import e, esc
+from ..keyboards import admin_menu, back_menu
 from ..utils import fmt_ton, ton_to_nano
 
 router = Router()
@@ -67,3 +71,35 @@ async def stats(message: Message, db: Database, config: Config) -> None:
 @router.message(Command("id"))
 async def my_id(message: Message) -> None:
     await message.answer(f"Твой id: <code>{message.from_user.id}</code>")
+
+
+@router.callback_query(F.data == "m:admin")
+async def admin_panel(call: CallbackQuery, config: Config) -> None:
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await call.message.edit_text(
+        f"{e('gear')} <b>Админка</b>\n\n"
+        f"<code>/credit &lt;id&gt; &lt;TON&gt; [коммент]</code> — начислить\n"
+        f"<code>/stats</code> — сводка",
+        reply_markup=admin_menu(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "a:stats")
+async def admin_stats(call: CallbackQuery, db: Database, config: Config) -> None:
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    data = await db.stats()
+    mode = f"\n\n{e('warn')} DRY_RUN — выплаты не отправляются" if config.dry_run else ""
+    await call.message.edit_text(
+        f"{e('chart')} <b>Статистика</b>\n\n"
+        f"{e('user')} Работников: <b>{data['workers']}</b>\n"
+        f"{e('money')} Баланс к выплате: <b>{fmt_ton(data['total_balance_nano'])}</b>\n"
+        f"{e('check')} Выплат проведено: <b>{data['paid_count']}</b>\n"
+        f"{e('send')} Выплачено всего: <b>{fmt_ton(data['paid_total_nano'])}</b>{mode}",
+        reply_markup=back_menu(),
+    )
+    await call.answer()

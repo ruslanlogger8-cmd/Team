@@ -122,6 +122,37 @@ async def main() -> None:
     line(f"выплачено всего:         {fmt_ton(stats['paid_total_nano'])}")
     line(f"реальных отправок:       {len(payer.sent)}")
 
+    step("10.", "Как выглядит интерфейс")
+    from bot.emoji import configure
+    from bot.keyboards import main_menu, confirm_withdraw
+
+    configure(False)
+    print()
+    print("   ┌─ Главное меню " + "─" * 30)
+    for row in main_menu(is_admin=True).inline_keyboard:
+        cells = []
+        for b in row:
+            colour = {"primary": "синяя", "success": "зелёная", "danger": "красная"}
+            mark = f" [{colour[b.style]}]" if b.style else ""
+            cells.append(f"{b.text}{mark}")
+        print("   │ " + "   ".join(cells))
+    print("   └" + "─" * 45)
+    print()
+    print("   ┌─ Подтверждение вывода " + "─" * 22)
+    for row in confirm_withdraw("2.5 TON").inline_keyboard:
+        for b in row:
+            colour = {"primary": "синяя", "success": "зелёная", "danger": "красная"}
+            print(f"   │ {b.text} [{colour.get(b.style, '—')}]")
+    print("   └" + "─" * 45)
+
+    top = await db.get_top(10)
+    print()
+    print("   ┌─ Топ-10 " + "─" * 36)
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    for i, (name, total, cnt) in enumerate(top, 1):
+        print(f"   │ {medals.get(i, str(i) + '.')} {name} — {fmt_ton(total)} ({cnt})")
+    print("   └" + "─" * 45)
+
     await db.close()
     os.remove(db_path)
     print("\n" + "=" * 62)

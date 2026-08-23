@@ -1,5 +1,5 @@
 # pip install -r requirements.txt
-aiogram>=3.7,<4
+aiogram>=3.30,<4  # ButtonStyle (цветные кнопки) и icon_custom_emoji_id
 tonutils>=0.3
 aiosqlite>=0.19
 python-dotenv>=1.0
