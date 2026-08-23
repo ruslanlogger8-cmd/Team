@@ -15,6 +15,11 @@ from .utils import fmt_ton
 
 logger = logging.getLogger(__name__)
 
+# Запас на комиссию сети. Реальная плата за перевод ~0.005–0.01 TON, берём
+# с запасом: лучше отказать заранее с понятным текстом, чем поймать отказ
+# от ноды посреди выплаты.
+GAS_RESERVE_NANO = 50_000_000  # 0.05 TON
+
 
 class DryRunPayer:
     """Заглушка для демо: ничего не отправляет, возвращает фейковый хэш."""
@@ -133,11 +138,33 @@ class TonPayer:
         вернёт средства на баланс работника.
         """
         await self._ensure_connected()
+        await self._wallet.refresh()
+
+        balance = int(self._wallet.balance or 0)
+        needed = amount_nano + GAS_RESERVE_NANO
+        if balance < needed:
+            raise RuntimeError(
+                f"на горячем кошельке {fmt_ton(balance)}, а нужно минимум "
+                f"{fmt_ton(needed)} — сумма выплаты плюс комиссия сети. "
+                f"Пополни {self.address}"
+            )
+
+        # Адрес кошелька существует сразу, но сам контракт появляется в сети
+        # только с первой ИСХОДЯЩЕЙ транзакцией. Пополнение его не разворачивает,
+        # поэтому к первому переводу прикладываем код контракта.
+        state_init = None
+        if self._wallet.is_uninit:
+            state_init = self._wallet.state_init
+            logger.info(
+                "Кошелёк %s ещё не развёрнут — первая выплата задеплоит контракт",
+                self.address,
+            )
 
         message = await self._wallet.transfer(
             destination=destination,
             amount=amount_nano,      # именно нанотоны, не TON
             body=self._comment,
+            state_init=state_init,
         )
         await self._client.send_message(message.as_b64)
 
