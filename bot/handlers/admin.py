@@ -276,7 +276,7 @@ async def gifts_summary(message: Message, db: Database, config: Config) -> None:
         blocks.append("\n".join(lines))
 
     await message.answer(
-        f"{e('dot')} <b>В работе</b>\n{RULE}\n" + f"\n\n{RULE}\n".join(blocks)
+        f"{e('dot')} <b>В работе</b>\n{RULE}\n" + "\n\n".join(blocks)
     )
 
 
