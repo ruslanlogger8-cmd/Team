@@ -9,12 +9,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _int_set(raw: str) -> set[int]:
+def _int_set(raw: str, var_name: str) -> set[int]:
     result: set[int] = set()
     for part in raw.replace(";", ",").split(","):
         part = part.strip()
-        if part:
+        if not part:
+            continue
+        try:
             result.add(int(part))
+        except ValueError:
+            raise RuntimeError(
+                f"{var_name} должен содержать только числовые Telegram id через запятую "
+                f"(например: 7712345678,8823456789), а получено {part!r}. "
+                f"Похоже, значение попало не в ту переменную окружения."
+            ) from None
     return result
 
 
@@ -47,11 +55,19 @@ class Config:
                 "Для демо без кошелька поставь DRY_RUN=true"
             )
 
-        admins = _int_set(os.environ.get("ADMIN_IDS", ""))
+        admins = _int_set(os.environ.get("ADMIN_IDS", ""), "ADMIN_IDS")
         if not admins:
             raise RuntimeError("ADMIN_IDS не задан (id админов через запятую)")
 
-        min_ton = float(os.environ.get("MIN_WITHDRAW_TON", "0.1"))
+        min_ton_raw = os.environ.get("MIN_WITHDRAW_TON", "0.1").strip() or "0.1"
+        try:
+            min_ton = float(min_ton_raw.replace(",", "."))
+        except ValueError:
+            raise RuntimeError(
+                f"MIN_WITHDRAW_TON должен быть числом (например 0.1), а получено {min_ton_raw!r}"
+            ) from None
+        if min_ton <= 0:
+            raise RuntimeError("MIN_WITHDRAW_TON должен быть больше нуля")
         return Config(
             bot_token=token,
             admin_ids=admins,
