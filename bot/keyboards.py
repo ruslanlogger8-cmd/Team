@@ -106,3 +106,13 @@ def claim_menu() -> InlineKeyboardMarkup:
             [btn("В меню", "m:main", PRIMARY, "back")],
         ]
     )
+
+
+def withdraw_choice(all_text: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [btn(f"Вывести всё · {all_text}", "wd:all", SUCCESS, "withdraw")],
+            [btn("Указать сумму", "wd:part", PRIMARY, "coin")],
+            [btn("В меню", "m:main", PRIMARY, "back")],
+        ]
+    )

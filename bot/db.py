@@ -174,11 +174,17 @@ class Database:
             await self.conn.commit()
             return new_balance
 
-    async def reserve_withdrawal(self, user_id: int, min_nano: int) -> tuple[int, str, str] | None:
-        """Атомарно резервирует ВЕСЬ баланс под вывод.
+    async def reserve_withdrawal(
+        self, user_id: int, min_nano: int, amount_nano: int | None = None
+    ) -> tuple[int, str, int] | None:
+        """Атомарно резервирует сумму под вывод.
+
+        amount_nano=None — выводится весь баланс. Иначе списывается ровно
+        указанная сумма, остаток остаётся на балансе.
 
         Возвращает (withdrawal_id, wallet, amount_nano) или None, если:
-        кошелёк не задан, баланс < min, либо уже есть активная заявка.
+        кошелёк не задан, сумма ниже минимума, больше баланса, либо уже есть
+        активная заявка.
         """
         async with self._lock:
             try:
@@ -187,7 +193,13 @@ class Database:
                     "SELECT wallet, balance_nano FROM workers WHERE user_id=?", (user_id,)
                 )
                 row = await cur.fetchone()
-                if row is None or not row["wallet"] or row["balance_nano"] < min_nano:
+                if row is None or not row["wallet"]:
+                    await self.conn.rollback()
+                    return None
+
+                balance = row["balance_nano"]
+                requested = balance if amount_nano is None else amount_nano
+                if requested < min_nano or requested > balance or requested <= 0:
                     await self.conn.rollback()
                     return None
 
@@ -199,17 +211,19 @@ class Database:
                     await self.conn.rollback()
                     return None
 
-                amount = row["balance_nano"]
                 wallet = row["wallet"]
-                await self.conn.execute("UPDATE workers SET balance_nano=0 WHERE user_id=?", (user_id,))
+                await self.conn.execute(
+                    "UPDATE workers SET balance_nano=? WHERE user_id=?",
+                    (balance - requested, user_id),
+                )
                 cur = await self.conn.execute(
                     "INSERT INTO withdrawals (user_id, amount_nano, wallet, status, created_at) "
                     "VALUES (?,?,?,'processing',?)",
-                    (user_id, amount, wallet, int(time.time())),
+                    (user_id, requested, wallet, int(time.time())),
                 )
                 withdrawal_id = cur.lastrowid
                 await self.conn.commit()
-                return withdrawal_id, wallet, amount
+                return withdrawal_id, wallet, requested
             except Exception:
                 await self.conn.rollback()
                 raise

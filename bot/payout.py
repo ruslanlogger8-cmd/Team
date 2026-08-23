@@ -55,8 +55,11 @@ async def execute_payout(
     payer: Payer,
     user_id: int,
     min_nano: int,
+    amount_nano: int | None = None,
 ) -> PayoutResult:
     """Выплачивает весь баланс работника.
+
+    amount_nano=None — выводится весь баланс, иначе указанная сумма.
 
     Баланс резервируется одной транзакцией до отправки, поэтому двойная выплата
     невозможна. При сбое сети средства возвращаются на баланс.
@@ -65,7 +68,7 @@ async def execute_payout(
     предыдущая заявка ещё в обработке.
     """
     async with _user_lock(user_id):
-        reserved = await db.reserve_withdrawal(user_id, min_nano)
+        reserved = await db.reserve_withdrawal(user_id, min_nano, amount_nano)
         if reserved is None:
             return PayoutResult(status="skipped")
 

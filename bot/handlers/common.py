@@ -14,12 +14,13 @@ from ..db import Database
 from ..emoji import e, esc
 from ..gifts.claim import ClaimResult, submit_claim
 from ..keyboards import (
-    back_menu, claim_menu, confirm_withdraw, history_nav, main_menu, wallet_menu,
+    back_menu, claim_menu, confirm_withdraw, history_nav, main_menu,
+    wallet_menu, withdraw_choice,
 )
 from ..payout import execute_payout
-from ..states import ClaimForm, WalletForm
+from ..states import ClaimForm, WalletForm, WithdrawForm
 from ..ui import reset_state, safe_edit, send_screen
-from ..utils import fmt_ton, is_valid_ton_address
+from ..utils import fmt_ton, is_valid_ton_address, parse_ton
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -275,10 +276,100 @@ async def withdraw_request(
 
     await safe_edit(
         call,
+        f"{e('withdraw')} <b>Вывод средств</b>\n"
+        f"{RULE}\n"
+        f"{e('balance')} Доступно · <b>{fmt_ton(worker.balance_nano)}</b>\n"
+        f"{e('wallet')} На адрес\n<code>{esc(worker.wallet)}</code>\n\n"
+        f"{e('dot')} Минимум · {fmt_ton(config.min_withdraw_nano)}",
+        withdraw_choice(fmt_ton(worker.balance_nano)),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "wd:part")
+async def withdraw_amount_prompt(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
+    worker = await db.get_worker(call.from_user.id)
+    if worker is None:
+        await call.answer("Нажми /start", show_alert=True)
+        return
+
+    await state.set_state(WithdrawForm.waiting_amount)
+    await safe_edit(
+        call,
+        f"{e('coin')} <b>Сколько вывести</b>\n"
+        f"{RULE}\n"
+        f"{e('balance')} Доступно · <b>{fmt_ton(worker.balance_nano)}</b>\n"
+        f"{e('dot')} Минимум · {fmt_ton(config.min_withdraw_nano)}\n\n"
+        f"{e('dot')} Пришли сумму числом · <code>1.5</code>\n"
+        f"{e('dot')} Остаток сохранится на балансе",
+        back_menu(),
+    )
+    await call.answer()
+
+
+@router.message(WithdrawForm.waiting_amount, F.text)
+async def withdraw_amount_entered(
+    message: Message, state: FSMContext, db: Database, config: Config
+) -> None:
+    worker = await db.get_worker(message.from_user.id)
+    if worker is None:
+        await state.clear()
+        await message.answer("Нажми /start")
+        return
+
+    try:
+        amount = parse_ton(message.text)
+    except ValueError:
+        await message.answer(
+            f"{e('cross')} <b>Это не сумма</b>\n"
+            f"{RULE}\n"
+            f"{e('dot')} Пришли число · <code>1.5</code> или <code>0,3</code>"
+        )
+        return
+
+    if amount < config.min_withdraw_nano:
+        await message.answer(
+            f"{e('cross')} Минимум для вывода · <b>{fmt_ton(config.min_withdraw_nano)}</b>"
+        )
+        return
+    if amount > worker.balance_nano:
+        await message.answer(
+            f"{e('cross')} <b>Столько нет на балансе</b>\n"
+            f"{RULE}\n"
+            f"{e('balance')} Доступно · <b>{fmt_ton(worker.balance_nano)}</b>"
+        )
+        return
+
+    # Флаг делает подтверждение одноразовым: второй тап по кнопке не найдёт
+    # его и не спишет сумму повторно.
+    await state.set_state(None)
+    await state.update_data(pending_withdraw=True, amount_nano=amount)
+    rest = worker.balance_nano - amount
+    await message.answer(
         f"{e('withdraw')} <b>Подтверждение вывода</b>\n"
         f"{RULE}\n"
-        f"{e('coin')} Сумма · <b>{fmt_ton(worker.balance_nano)}</b>\n"
-        f"{e('wallet')} Адрес получателя\n<code>{esc(worker.wallet)}</code>\n\n"
+        f"{e('coin')} К выводу · <b>{fmt_ton(amount)}</b>\n"
+        f"{e('balance')} Останется · {fmt_ton(rest)}\n"
+        f"{e('wallet')} На адрес\n<code>{esc(worker.wallet)}</code>",
+        reply_markup=confirm_withdraw(fmt_ton(amount)),
+    )
+
+
+@router.callback_query(F.data == "wd:all")
+async def withdraw_all(call: CallbackQuery, db: Database, state: FSMContext) -> None:
+    worker = await db.get_worker(call.from_user.id)
+    if worker is None:
+        await call.answer("Нажми /start", show_alert=True)
+        return
+    await state.update_data(pending_withdraw=True, amount_nano=None)
+    await safe_edit(
+        call,
+        f"{e('withdraw')} <b>Подтверждение вывода</b>\n"
+        f"{RULE}\n"
+        f"{e('coin')} К выводу · <b>{fmt_ton(worker.balance_nano)}</b>\n"
+        f"{e('wallet')} На адрес\n<code>{esc(worker.wallet)}</code>\n\n"
         f"{e('warn')} Отправляется весь баланс. Операция необратима.",
         confirm_withdraw(fmt_ton(worker.balance_nano)),
     )
@@ -293,11 +384,32 @@ async def withdraw_cancel(call: CallbackQuery, db: Database, config: Config) -> 
 
 
 @router.callback_query(F.data == "wd:yes")
-async def withdraw_confirm(call: CallbackQuery, db: Database, config: Config, payer) -> None:
+async def withdraw_confirm(
+    call: CallbackQuery, db: Database, config: Config, payer, state: FSMContext
+) -> None:
     await call.answer()
+
+    # Подтверждение одноразовое: без взведённого флага это повторный тап
+    # по той же кнопке, и списывать сумму второй раз нельзя.
+    data = await state.get_data()
+    if not data.get("pending_withdraw"):
+        await safe_edit(
+            call,
+            f"{e('warn')} <b>Заявка уже обработана</b>\n"
+            f"{RULE}\n"
+            f"{e('dot')} Загляни в «Историю», чтобы увидеть её статус.",
+            back_menu(),
+        )
+        return
+
+    amount_nano = data.get("amount_nano")
+    await state.clear()
+
     await safe_edit(call, f"{e('time')} <b>Отправляю перевод…</b>")
 
-    result = await execute_payout(db, payer, call.from_user.id, config.min_withdraw_nano)
+    result = await execute_payout(
+        db, payer, call.from_user.id, config.min_withdraw_nano, amount_nano
+    )
 
     if result.status == "skipped":
         await safe_edit(
@@ -323,11 +435,17 @@ async def withdraw_confirm(call: CallbackQuery, db: Database, config: Config, pa
         return
 
     demo = f"\n\n{e('warn')} Режим DRY_RUN · реальные TON не отправлялись" if config.dry_run else ""
+    worker = await db.get_worker(call.from_user.id)
+    rest = (
+        f"\n{e('balance')} Остаток · {fmt_ton(worker.balance_nano)}"
+        if worker and worker.balance_nano
+        else ""
+    )
     await safe_edit(
         call,
         f"{e('check')} <b>Выплата отправлена</b>\n"
         f"{RULE}\n"
-        f"{e('coin')} Сумма · <b>{fmt_ton(result.amount_nano)}</b>\n"
+        f"{e('coin')} Сумма · <b>{fmt_ton(result.amount_nano)}</b>{rest}\n"
         f"{e('link')} Транзакция\n<code>{esc(result.tx_hash)}</code>{demo}",
         back_menu(),
     )

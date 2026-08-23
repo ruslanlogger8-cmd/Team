@@ -12,3 +12,7 @@ class CreditForm(StatesGroup):
 
 class ClaimForm(StatesGroup):
     waiting_link = State()
+
+
+class WithdrawForm(StatesGroup):
+    waiting_amount = State()
