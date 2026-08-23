@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 
@@ -55,6 +56,10 @@ class Database:
     def __init__(self, path: str) -> None:
         self._path = path
         self._conn: aiosqlite.Connection | None = None
+        # aiosqlite держит одно соединение на весь процесс, поэтому все операции,
+        # меняющие деньги, сериализуются этим локом. Без него параллельные заявки
+        # ломают транзакции друг друга.
+        self._lock = asyncio.Lock()
 
     async def connect(self) -> None:
         self._conn = await aiosqlite.connect(self._path)
@@ -103,20 +108,21 @@ class Database:
 
     async def credit(self, user_id: int, amount_nano: int, admin_id: int, comment: str) -> int:
         """Начисляет баланс. Возвращает новый баланс. Работник должен существовать."""
-        cur = await self.conn.execute("SELECT balance_nano FROM workers WHERE user_id=?", (user_id,))
-        row = await cur.fetchone()
-        if row is None:
-            raise ValueError("worker_not_found")
-        new_balance = row["balance_nano"] + amount_nano
-        if new_balance < 0:
-            raise ValueError("negative_balance")
-        await self.conn.execute("UPDATE workers SET balance_nano=? WHERE user_id=?", (new_balance, user_id))
-        await self.conn.execute(
-            "INSERT INTO credits (user_id, amount_nano, admin_id, comment, created_at) VALUES (?,?,?,?,?)",
-            (user_id, amount_nano, admin_id, comment, int(time.time())),
-        )
-        await self.conn.commit()
-        return new_balance
+        async with self._lock:
+            cur = await self.conn.execute("SELECT balance_nano FROM workers WHERE user_id=?", (user_id,))
+            row = await cur.fetchone()
+            if row is None:
+                raise ValueError("worker_not_found")
+            new_balance = row["balance_nano"] + amount_nano
+            if new_balance < 0:
+                raise ValueError("negative_balance")
+            await self.conn.execute("UPDATE workers SET balance_nano=? WHERE user_id=?", (new_balance, user_id))
+            await self.conn.execute(
+                "INSERT INTO credits (user_id, amount_nano, admin_id, comment, created_at) VALUES (?,?,?,?,?)",
+                (user_id, amount_nano, admin_id, comment, int(time.time())),
+            )
+            await self.conn.commit()
+            return new_balance
 
     async def reserve_withdrawal(self, user_id: int, min_nano: int) -> tuple[int, str, str] | None:
         """Атомарно резервирует ВЕСЬ баланс под вывод.
@@ -124,38 +130,39 @@ class Database:
         Возвращает (withdrawal_id, wallet, amount_nano) или None, если:
         кошелёк не задан, баланс < min, либо уже есть активная заявка.
         """
-        try:
-            await self.conn.execute("BEGIN IMMEDIATE")
-            cur = await self.conn.execute(
-                "SELECT wallet, balance_nano FROM workers WHERE user_id=?", (user_id,)
-            )
-            row = await cur.fetchone()
-            if row is None or not row["wallet"] or row["balance_nano"] < min_nano:
-                await self.conn.rollback()
-                return None
+        async with self._lock:
+            try:
+                await self.conn.execute("BEGIN IMMEDIATE")
+                cur = await self.conn.execute(
+                    "SELECT wallet, balance_nano FROM workers WHERE user_id=?", (user_id,)
+                )
+                row = await cur.fetchone()
+                if row is None or not row["wallet"] or row["balance_nano"] < min_nano:
+                    await self.conn.rollback()
+                    return None
 
-            cur = await self.conn.execute(
-                "SELECT COUNT(*) AS c FROM withdrawals WHERE user_id=? AND status='processing'",
-                (user_id,),
-            )
-            if (await cur.fetchone())["c"] > 0:
-                await self.conn.rollback()
-                return None
+                cur = await self.conn.execute(
+                    "SELECT COUNT(*) AS c FROM withdrawals WHERE user_id=? AND status='processing'",
+                    (user_id,),
+                )
+                if (await cur.fetchone())["c"] > 0:
+                    await self.conn.rollback()
+                    return None
 
-            amount = row["balance_nano"]
-            wallet = row["wallet"]
-            await self.conn.execute("UPDATE workers SET balance_nano=0 WHERE user_id=?", (user_id,))
-            cur = await self.conn.execute(
-                "INSERT INTO withdrawals (user_id, amount_nano, wallet, status, created_at) "
-                "VALUES (?,?,?,'processing',?)",
-                (user_id, amount, wallet, int(time.time())),
-            )
-            withdrawal_id = cur.lastrowid
-            await self.conn.commit()
-            return withdrawal_id, wallet, amount
-        except Exception:
-            await self.conn.rollback()
-            raise
+                amount = row["balance_nano"]
+                wallet = row["wallet"]
+                await self.conn.execute("UPDATE workers SET balance_nano=0 WHERE user_id=?", (user_id,))
+                cur = await self.conn.execute(
+                    "INSERT INTO withdrawals (user_id, amount_nano, wallet, status, created_at) "
+                    "VALUES (?,?,?,'processing',?)",
+                    (user_id, amount, wallet, int(time.time())),
+                )
+                withdrawal_id = cur.lastrowid
+                await self.conn.commit()
+                return withdrawal_id, wallet, amount
+            except Exception:
+                await self.conn.rollback()
+                raise
 
     async def mark_paid(self, withdrawal_id: int, tx_hash: str) -> None:
         await self.conn.execute(
@@ -166,15 +173,16 @@ class Database:
 
     async def mark_failed_and_refund(self, withdrawal_id: int, user_id: int, amount_nano: int, error: str) -> None:
         """Возврат зарезервированных средств на баланс при сбое выплаты."""
-        await self.conn.execute(
-            "UPDATE withdrawals SET status='failed', error=?, finished_at=? WHERE id=?",
-            (error[:500], int(time.time()), withdrawal_id),
-        )
-        await self.conn.execute(
-            "UPDATE workers SET balance_nano=balance_nano+? WHERE user_id=?",
-            (amount_nano, user_id),
-        )
-        await self.conn.commit()
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE withdrawals SET status='failed', error=?, finished_at=? WHERE id=?",
+                (error[:500], int(time.time()), withdrawal_id),
+            )
+            await self.conn.execute(
+                "UPDATE workers SET balance_nano=balance_nano+? WHERE user_id=?",
+                (amount_nano, user_id),
+            )
+            await self.conn.commit()
 
     async def stats(self) -> dict[str, int]:
         cur = await self.conn.execute("SELECT COUNT(*) AS c, COALESCE(SUM(balance_nano),0) AS s FROM workers")
