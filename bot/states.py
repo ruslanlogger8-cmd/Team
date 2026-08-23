@@ -1,0 +1,10 @@
+from aiogram.fsm.state import State, StatesGroup
+
+
+class WalletForm(StatesGroup):
+    waiting_address = State()
+
+
+class CreditForm(StatesGroup):
+    waiting_user = State()
+    waiting_amount = State()

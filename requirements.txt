@@ -1,0 +1,5 @@
+# pip install -r requirements.txt
+aiogram>=3.7,<4
+tonutils>=0.3
+aiosqlite>=0.19
+python-dotenv>=1.0
