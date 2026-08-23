@@ -7,12 +7,17 @@ Telegram не даёт превратить текстовое сообщени�
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
+
+# Telegram возвращает file_id после первой загрузки. Кэшируем его, чтобы
+# не переотправлять картинку на каждое открытие меню.
+_photo_cache: dict[str, str] = {}
 
 
 async def safe_edit(
@@ -42,6 +47,19 @@ async def safe_edit(
         raise
 
 
+def _resolve_photo(photo: str) -> str | FSInputFile:
+    """MENU_PHOTO может быть file_id, ссылкой или путём к файлу в репозитории."""
+    cached = _photo_cache.get(photo)
+    if cached:
+        return cached
+    if photo.startswith(("http://", "https://")):
+        return photo
+    path = Path(photo)
+    if path.is_file():
+        return FSInputFile(path)
+    return photo  # считаем, что это file_id
+
+
 async def send_screen(
     message,
     text: str,
@@ -50,15 +68,20 @@ async def send_screen(
 ) -> None:
     """Отправляет экран: фото с подписью, если задано, иначе текст.
 
-    При неверном file_id или недоступной ссылке молча уходит в текст —
-    оформление не должно ронять бота.
+    Локальный файл загружается один раз, дальше используется file_id.
+    Любая проблема с картинкой откатывает на текст — оформление не должно
+    ронять бота.
     """
     if photo:
         try:
-            await message.answer_photo(photo, caption=text, reply_markup=reply_markup)
+            sent = await message.answer_photo(
+                _resolve_photo(photo), caption=text, reply_markup=reply_markup
+            )
+            if sent.photo:
+                _photo_cache[photo] = sent.photo[-1].file_id
             return
-        except TelegramBadRequest as exc:
-            logger.warning("Не удалось отправить MENU_PHOTO (%s) — показываю текстом", exc)
+        except (TelegramBadRequest, OSError, ValueError) as exc:
+            logger.warning("MENU_PHOTO (%s) не отправился: %s — показываю текстом", photo, exc)
     await message.answer(text, reply_markup=reply_markup)
 
 

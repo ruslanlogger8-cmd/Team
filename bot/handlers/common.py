@@ -35,17 +35,26 @@ def _dt(timestamp: int) -> str:
     return datetime.fromtimestamp(timestamp, timezone.utc).strftime("%d.%m.%Y в %H:%M")
 
 
-def _menu_text(name: str) -> str:
-    return (
-        f"{e('logo')} <b>Панель выплат</b>\n"
+def _menu_text(name: str, config: Config, balance_nano: int | None) -> str:
+    head = (
+        f"{e('logo')} <b>{esc(config.team_name)}</b>\n"
         f"{RULE}\n"
-        f"{e('wave')} Привет, <b>{esc(name)}</b>\n\n"
-        f"{e('dot')} Выбери раздел на кнопках ниже."
+        f"{e('wave')} Привет, <b>{esc(name)}</b>\n"
     )
+    if balance_nano is not None:
+        head += f"{e('balance')} Баланс · <b>{fmt_ton(balance_nano)}</b>\n"
+    mode = (
+        f"{e('withdraw')} Выплаты приходят автоматически"
+        if config.auto_payout
+        else f"{e('withdraw')} Вывод — кнопкой «Вывести средства»"
+    )
+    return head + f"\n{mode}"
 
 
-async def _open_menu(target: Message | CallbackQuery, config: Config) -> None:
-    text = _menu_text(target.from_user.full_name)
+async def _open_menu(
+    target: Message | CallbackQuery, config: Config, balance_nano: int | None = None
+) -> None:
+    text = _menu_text(target.from_user.full_name, config, balance_nano)
     keyboard = main_menu(is_admin=target.from_user.id in config.admin_ids)
     if isinstance(target, CallbackQuery):
         await safe_edit(target, text, keyboard)
@@ -58,13 +67,17 @@ async def start(message: Message, db: Database, config: Config, state: FSMContex
     await reset_state(state)
     user = message.from_user
     await db.upsert_worker(user.id, user.username, user.full_name)
-    await _open_menu(message, config)
+    worker = await db.get_worker(user.id)
+    await _open_menu(message, config, worker.balance_nano if worker else None)
 
 
 @router.callback_query(F.data == "m:main")
-async def back_to_menu(call: CallbackQuery, config: Config, state: FSMContext) -> None:
+async def back_to_menu(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
     await reset_state(state)
-    await _open_menu(call, config)
+    worker = await db.get_worker(call.from_user.id)
+    await _open_menu(call, config, worker.balance_nano if worker else None)
     await call.answer()
 
 
@@ -270,8 +283,9 @@ async def withdraw_request(
 
 
 @router.callback_query(F.data == "wd:no")
-async def withdraw_cancel(call: CallbackQuery, config: Config) -> None:
-    await _open_menu(call, config)
+async def withdraw_cancel(call: CallbackQuery, db: Database, config: Config) -> None:
+    worker = await db.get_worker(call.from_user.id)
+    await _open_menu(call, config, worker.balance_nano if worker else None)
     await call.answer("Отменено")
 
 
