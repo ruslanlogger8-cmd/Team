@@ -178,22 +178,26 @@ class TonPayer:
         else:
             logger.info("Баланс кошелька: %s, выплата %s", fmt_ton(balance), fmt_ton(amount_nano))
 
-        # Адрес кошелька существует сразу, но сам контракт появляется в сети
-        # только с первой ИСХОДЯЩЕЙ транзакцией. Пополнение его не разворачивает,
-        # поэтому к первому переводу прикладываем код контракта.
-        state_init = None
-        if self._wallet.is_uninit:
-            state_init = self._wallet.state_init
+        # seqno берём прямым get-методом у контракта, а не из разобранного
+        # состояния: если состояние прочиталось как неактивное, библиотека
+        # подставит seqno=0, контракт сравнит со своим и отвергнет платёж
+        # с exitcode=33. Разворачивание кошелька tonutils делает сам.
+        params = None
+        try:
+            chain_seqno = await self._wallet.seqno()
+            params = self._wallet._params_model(seqno=chain_seqno)
+            logger.info("seqno из контракта: %s", chain_seqno)
+        except Exception as exc:  # noqa: BLE001 — у неразвёрнутого нет get-методов
             logger.info(
-                "Кошелёк %s ещё не развёрнут — первая выплата задеплоит контракт",
-                self.address,
+                "seqno не прочитан (%s) — считаю кошелёк неразвёрнутым, "
+                "первая транзакция задеплоит контракт", exc,
             )
 
         message = await self._wallet.transfer(
             destination=destination,
             amount=amount_nano,      # именно нанотоны, не TON
             body=self._comment,
-            state_init=state_init,
+            params=params,
         )
         await self._client.send_message(message.as_b64)
 
