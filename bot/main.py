@@ -17,6 +17,7 @@ from .config import Config
 from .db import Database
 from .emoji import configure as configure_emoji
 from .handlers import build_router
+from .premium_fallback import PremiumEmojiFallback
 from .ton import create_payer
 
 logging.basicConfig(
@@ -40,6 +41,8 @@ async def main() -> None:
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    bot.session.middleware(PremiumEmojiFallback())
+
     dp = Dispatcher(storage=MemoryStorage())
     dp.workflow_data.update(db=db, config=config, payer=payer)
     dp.include_router(build_router())
