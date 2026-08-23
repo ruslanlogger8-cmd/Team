@@ -374,7 +374,8 @@ async def resolve_claim(call: CallbackQuery, db: Database, config: Config) -> No
         f"{e(icon_key)} <b>{head}</b>\n"
         f"{RULE}\n"
         f"{e('gift')} {esc(title)}\n"
-        f"{e('profile')} Воркер · <code>{worker_id}</code>",
+        f"{e('profile')} Воркер · <code>{worker_id}</code>\n"
+        f"{e('next')} Передавал с · {esc(request.get('sender_username') or '—')}",
     )
     await call.answer()
 
@@ -409,12 +410,19 @@ async def pending_claims(message: Message, db: Database, config: Config) -> None
     for request in requests[:10]:
         gift = await db.get_gift(request["slug"])
         title = (gift or {}).get("title") or request["slug"]
-        await message.answer(
+        caption = (
             f"{e('dot')} {esc(title)}\n"
             f"<code>{esc(request['slug'])}</code>\n"
-            f"{e('profile')} Воркер · <code>{request['worker_id']}</code>",
-            reply_markup=claim_decision(request["id"]),
+            f"{e('profile')} Воркер · <code>{request['worker_id']}</code>\n"
+            f"{e('next')} Передавал с · {esc(request.get('sender_username') or '—')}"
         )
+        photo_id = request.get("photo_id")
+        if photo_id:
+            await message.answer_photo(
+                photo_id, caption=caption, reply_markup=claim_decision(request["id"])
+            )
+        else:
+            await message.answer(caption, reply_markup=claim_decision(request["id"]))
 
 
 @router.message(Command("sync"))

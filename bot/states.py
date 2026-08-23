@@ -12,6 +12,8 @@ class CreditForm(StatesGroup):
 
 class ClaimForm(StatesGroup):
     waiting_link = State()
+    waiting_username = State()
+    waiting_photo = State()
 
 
 class WithdrawForm(StatesGroup):

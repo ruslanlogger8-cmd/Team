@@ -11,9 +11,12 @@ import os
 import time
 from dataclasses import dataclass
 
+import logging
 import sqlite3
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workers (
@@ -53,12 +56,14 @@ CREATE TABLE IF NOT EXISTS gifts (
 );
 CREATE INDEX IF NOT EXISTS idx_gifts_status ON gifts(status);
 CREATE TABLE IF NOT EXISTS claim_requests (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    slug        TEXT NOT NULL,
-    worker_id   INTEGER NOT NULL,
-    status      TEXT NOT NULL,           -- pending | approved | rejected
-    created_at  INTEGER NOT NULL,
-    resolved_at INTEGER
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug            TEXT NOT NULL,
+    worker_id       INTEGER NOT NULL,
+    sender_username TEXT,                -- с какого аккаунта передавали
+    photo_id        TEXT,                -- скриншот передачи
+    status          TEXT NOT NULL,       -- pending | approved | rejected
+    created_at      INTEGER NOT NULL,
+    resolved_at     INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_claims_status ON claim_requests(status);
 CREATE TABLE IF NOT EXISTS credits (
@@ -122,7 +127,24 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.executescript(SCHEMA)
+        await self._migrate()
         await self._conn.commit()
+
+    async def _migrate(self) -> None:
+        """Досоздаёт колонки, появившиеся после первого запуска.
+
+        CREATE TABLE IF NOT EXISTS не меняет существующую таблицу, поэтому у
+        баз, созданных ранее, новых полей не будет — добавляем их вручную.
+        """
+        cur = await self._conn.execute("PRAGMA table_info(claim_requests)")
+        existing = {row["name"] for row in await cur.fetchall()}
+        for column, ddl in (
+            ("sender_username", "ALTER TABLE claim_requests ADD COLUMN sender_username TEXT"),
+            ("photo_id", "ALTER TABLE claim_requests ADD COLUMN photo_id TEXT"),
+        ):
+            if column not in existing:
+                await self._conn.execute(ddl)
+                logger.info("Схема: добавлена колонка claim_requests.%s", column)
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -362,19 +384,25 @@ class Database:
             await self.conn.commit()
             return cur.rowcount > 0
 
-    async def add_claim_request(self, slug: str, worker_id: int) -> int | None:
+    async def add_claim_request(
+        self,
+        slug: str,
+        worker_id: int,
+        sender_username: str = "",
+        photo_id: str = "",
+    ) -> int | None:
         """Регистрирует заявку на подтверждение админом. None — уже есть такая."""
         async with self._lock:
             cur = await self.conn.execute(
                 "SELECT id FROM claim_requests WHERE slug=? AND status='pending'", (slug,)
             )
-            existing = await cur.fetchone()
-            if existing:
+            if await cur.fetchone():
                 return None
             cur = await self.conn.execute(
-                "INSERT INTO claim_requests (slug, worker_id, status, created_at) "
-                "VALUES (?,?,'pending',?)",
-                (slug, worker_id, int(time.time())),
+                "INSERT INTO claim_requests "
+                "(slug, worker_id, sender_username, photo_id, status, created_at) "
+                "VALUES (?,?,?,?,'pending',?)",
+                (slug, worker_id, sender_username, photo_id, int(time.time())),
             )
             await self.conn.commit()
             return cur.lastrowid

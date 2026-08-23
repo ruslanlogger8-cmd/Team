@@ -167,3 +167,50 @@ class TestWorkerGifts:
     async def test_empty_for_new_worker(self, db):
         await _worker(db, 1)
         assert await db.gifts_by_worker(1) == []
+
+
+@pytest.mark.asyncio
+class TestEvidence:
+    """Юзернейм отправителя и скриншот сохраняются вместе с заявкой."""
+
+    async def test_evidence_stored(self, db):
+        await _worker(db, 1)
+        await _incoming(db)
+        claim = await submit_claim(
+            db, 1, "PlushPepe-42",
+            sender_username="@ivan_petrov", photo_id="AgACAgIAAx123",
+        )
+        request = await db.get_claim_request(claim.request_id)
+        assert request["sender_username"] == "@ivan_petrov"
+        assert request["photo_id"] == "AgACAgIAAx123"
+
+    async def test_evidence_visible_in_pending_list(self, db):
+        await _worker(db, 1)
+        await _incoming(db)
+        await submit_claim(db, 1, "PlushPepe-42", sender_username="@ivan", photo_id="ph1")
+        (row,) = await db.pending_claim_requests()
+        assert row["sender_username"] == "@ivan" and row["photo_id"] == "ph1"
+
+    async def test_missing_evidence_still_recorded(self, db):
+        """Прямой режим без подтверждения не требует доказательств."""
+        await _worker(db, 1)
+        await _incoming(db)
+        claim = await submit_claim(db, 1, "PlushPepe-42", needs_approval=False)
+        assert claim.result is ClaimResult.ATTACHED
+
+
+class TestUsername:
+    @pytest.mark.parametrize("text,expected", [
+        ("@ivan_petrov", "@ivan_petrov"),
+        ("ivan_petrov", "@ivan_petrov"),
+        ("https://t.me/ivan_petrov", "@ivan_petrov"),
+        ("  @Ivan_2  ", "@Ivan_2"),
+    ])
+    def test_recognised(self, text, expected):
+        from bot.gifts.claim import parse_username
+        assert parse_username(text) == expected
+
+    @pytest.mark.parametrize("bad", ["", "@ab", "мусор", "@" + "x" * 40, "123abc"])
+    def test_rejected(self, bad):
+        from bot.gifts.claim import parse_username
+        assert parse_username(bad) is None

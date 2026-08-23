@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, Message
 from ..config import Config
 from ..db import Database
 from ..emoji import e, esc
-from ..gifts.claim import ClaimResult, submit_claim
+from ..gifts.claim import ClaimResult, parse_nft_slug, parse_username, submit_claim
 from ..keyboards import (
     back_menu, claim_menu, confirm_withdraw, history_nav, main_menu,
     wallet_menu, withdraw_choice,
@@ -491,7 +491,9 @@ async def claim_screen(call: CallbackQuery, config: Config, state: FSMContext) -
         f"{RULE}\n"
         f"{e('dot')} Отправил подарок и хочешь закрепить его за собой — "
         f"пришли ссылку на него.\n\n"
-        f"{e('shield')} Заявка проходит, только если подарок реально дошёл. "
+        f"{e('shield')} Нужны три вещи · ссылка, юзернейм отправителя, "
+        f"скриншот передачи.\n"
+        f"{e('dot')} Заявка проходит, только если подарок реально дошёл. "
         f"Чужой закрепить нельзя.\n\n"
         f"{e('star')} Доля · <b>{config.worker_share_percent}%</b> от суммы продажи",
         claim_menu(),
@@ -506,21 +508,20 @@ async def claim_prompt(call: CallbackQuery, state: FSMContext) -> None:
         call,
         f"{e('link')} <b>Ссылка на подарок</b>\n"
         f"{RULE}\n"
+        f"{e('dot')} Шаг 1 из 3 · ссылка на подарок\n"
         f"{e('dot')} Открой подарок в Telegram, нажми «Поделиться» "
         f"и пришли ссылку сюда.\n\n"
-        f"{e('dot')} Вид ссылки · <code>t.me/nft/PlushPepe-42</code>",
+        f"{e('dot')} Вид ссылки · <code>t.me/nft/PlushPepe-42</code>\n\n"
+        f"{e('shield')} Дальше спрошу юзернейм отправителя и скриншот передачи.",
         back_menu(),
     )
     await call.answer()
 
 
 @router.message(ClaimForm.waiting_link, F.text)
-async def claim_submit(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    claim = await submit_claim(
-        db, message.from_user.id, message.text, config.claim_needs_approval
-    )
-
-    if claim.result is ClaimResult.BAD_LINK:
+async def claim_link(message: Message, state: FSMContext, db: Database) -> None:
+    slug = parse_nft_slug(message.text)
+    if slug is None:
         await message.answer(
             f"{e('cross')} <b>Ссылку не разобрал</b>\n"
             f"{RULE}\n"
@@ -529,68 +530,145 @@ async def claim_submit(message: Message, state: FSMContext, db: Database, config
         )
         return
 
-    await state.clear()
-    keyboard = main_menu(is_admin=message.from_user.id in config.admin_ids)
-
-    if claim.result is ClaimResult.NOT_FOUND:
+    # Проверяем существование сразу: незачем гонять человека через три шага,
+    # если подарка нет или он уже за кем-то.
+    gift = await db.get_gift(slug)
+    if gift is None:
+        await state.clear()
         await message.answer(
             f"{e('cross')} <b>Такой подарок не поступал</b>\n"
             f"{RULE}\n"
-            f"{e('dot')} <code>{esc(claim.slug)}</code>\n\n"
+            f"{e('dot')} <code>{esc(slug)}</code>\n\n"
             f"{e('time')} Если только что отправил — подожди минуту и повтори.\n"
             f"{e('warn')} Проверь, что отправлял на нужный аккаунт.",
+            reply_markup=back_menu(),
+        )
+        return
+
+    owner = gift["worker_id"]
+    if owner == message.from_user.id:
+        await state.clear()
+        await message.answer(
+            f"{e('check')} <b>Этот подарок уже за тобой</b>\n"
+            f"{RULE}\n{e('gift')} {esc(gift['title'] or slug)}",
+            reply_markup=back_menu(),
+        )
+        return
+    if owner is not None:
+        await state.clear()
+        await message.answer(
+            f"{e('warn')} <b>Подарок уже закреплён</b>\n"
+            f"{RULE}\n"
+            f"{e('gift')} {esc(gift['title'] or slug)}\n\n"
+            f"{e('shield')} Он числится за другим воркером. "
+            f"Если это ошибка — напиши администратору.",
+            reply_markup=back_menu(),
+        )
+        return
+
+    await state.update_data(slug=slug, title=gift["title"] or slug)
+    await state.set_state(ClaimForm.waiting_username)
+    await message.answer(
+        f"{e('profile')} <b>С какого аккаунта передавал</b>\n"
+        f"{RULE}\n"
+        f"{e('gift')} {esc(gift['title'] or slug)}\n\n"
+        f"{e('dot')} Пришли юзернейм аккаунта, с которого ушёл подарок.\n"
+        f"{e('dot')} Вид · <code>@username</code>\n\n"
+        f"{e('shield')} Он нужен, чтобы администратор сверил передачу."
+    )
+
+
+@router.message(ClaimForm.waiting_username, F.text)
+async def claim_username(message: Message, state: FSMContext) -> None:
+    username = parse_username(message.text)
+    if username is None:
+        await message.answer(
+            f"{e('cross')} <b>Это не юзернейм</b>\n"
+            f"{RULE}\n"
+            f"{e('dot')} Пришли в виде <code>@username</code>\n"
+            f"{e('dot')} От 5 до 32 символов, латиница, цифры и подчёркивания"
+        )
+        return
+
+    await state.update_data(sender_username=username)
+    await state.set_state(ClaimForm.waiting_photo)
+    await message.answer(
+        f"{e('link')} <b>Скриншот передачи</b>\n"
+        f"{RULE}\n"
+        f"{e('profile')} Аккаунт · {esc(username)}\n\n"
+        f"{e('dot')} Пришли скриншот, где видно передачу подарка менеджеру.\n"
+        f"{e('shield')} Без него заявку не примут."
+    )
+
+
+@router.message(ClaimForm.waiting_photo, F.photo)
+async def claim_photo(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    data = await state.get_data()
+    photo_id = message.photo[-1].file_id
+
+    claim = await submit_claim(
+        db,
+        message.from_user.id,
+        data.get("slug", ""),
+        config.claim_needs_approval,
+        sender_username=data.get("sender_username", ""),
+        photo_id=photo_id,
+    )
+    await state.clear()
+    keyboard = main_menu(is_admin=message.from_user.id in config.admin_ids)
+
+    if claim.result is ClaimResult.DUPLICATE:
+        await message.answer(
+            f"{e('time')} <b>На этот подарок уже есть заявка</b>\n"
+            f"{RULE}\n{e('dot')} {esc(claim.title)}\n\n"
+            f"{e('shield')} Администратор её рассматривает.",
             reply_markup=keyboard,
         )
         return
 
     if claim.result is ClaimResult.TAKEN:
         await message.answer(
-            f"{e('warn')} <b>Подарок уже закреплён</b>\n"
-            f"{RULE}\n"
-            f"{e('dot')} {esc(claim.title)}\n\n"
-            f"{e('shield')} Он числится за другим воркером. "
-            f"Если это ошибка — напиши администратору.",
-            reply_markup=keyboard,
-        )
-        return
-
-    if claim.result is ClaimResult.DUPLICATE:
-        await message.answer(
-            f"{e('time')} <b>На этот подарок уже есть заявка</b>\n"
-            f"{RULE}\n"
-            f"{e('dot')} {esc(claim.title)}\n\n"
-            f"{e('shield')} Администратор её рассматривает. "
-            f"Если подарок твой — напиши ему.",
+            f"{e('warn')} <b>Подарок уже закреплён за другим</b>",
             reply_markup=keyboard,
         )
         return
 
     if claim.result is ClaimResult.PENDING:
-        await _notify_claim(message.bot, config, claim, message.from_user)
+        await _notify_claim(
+            message.bot, config, claim, message.from_user,
+            data.get("sender_username", ""), photo_id,
+        )
         await message.answer(
             f"{e('time')} <b>Заявка отправлена на проверку</b>\n"
             f"{RULE}\n"
-            f"{e('gift')} {esc(claim.title)}\n\n"
-            f"{e('shield')} Подарок закрепят за тобой после подтверждения "
-            f"администратором — так чужой подарок нельзя забрать по ссылке.\n"
-            f"{e('dot')} Ответ придёт сюда же.",
+            f"{e('gift')} {esc(claim.title)}\n"
+            f"{e('profile')} Отправлено с · {esc(data.get('sender_username', ''))}\n"
+            f"{e('check')} Скриншот приложен\n\n"
+            f"{e('shield')} Администратор сверит передачу и подтвердит. "
+            f"Ответ придёт сюда же.",
             reply_markup=keyboard,
         )
         return
 
     icon_key, label = GIFT_STATUS.get(claim.status, ("dot", claim.status))
-    head = (
-        "Заявка принята" if claim.result is ClaimResult.ATTACHED
-        else "Этот подарок уже за тобой"
-    )
     await message.answer(
-        f"{e('check')} <b>{head}</b>\n"
+        f"{e('check')} <b>Заявка принята</b>\n"
         f"{RULE}\n"
         f"{e('gift')} {esc(claim.title)}\n"
         f"{e(icon_key)} Статус · {label}\n\n"
         f"{e('star')} После продажи получишь <b>{config.worker_share_percent}%</b> "
         f"на баланс, выплата уйдёт автоматически.",
         reply_markup=keyboard,
+    )
+
+
+@router.message(ClaimForm.waiting_photo)
+async def claim_photo_missing(message: Message) -> None:
+    await message.answer(
+        f"{e('warn')} <b>Нужен именно скриншот</b>\n"
+        f"{RULE}\n"
+        f"{e('dot')} Пришли картинкой, где видно передачу подарка.\n"
+        f"{e('dot')} Файлом или текстом не подойдёт."
     )
 
 
@@ -617,21 +695,29 @@ async def my_gifts(call: CallbackQuery, db: Database, state: FSMContext) -> None
     await call.answer()
 
 
-async def _notify_claim(bot, config: Config, claim, user) -> None:
-    """Отправляет админам заявку с кнопками подтверждения."""
+async def _notify_claim(bot, config: Config, claim, user, sender_username, photo_id) -> None:
+    """Отправляет админам заявку со скриншотом и кнопками решения."""
     from ..keyboards import claim_decision
 
-    text = (
+    caption = (
         f"{e('gift')} <b>Заявка на подарок</b>\n"
         f"{RULE}\n"
-        f"{e('profile')} {esc(user.full_name)} · @{esc(user.username or '—')}\n"
-        f"{e('id')} <code>{user.id}</code>\n\n"
         f"{e('dot')} {esc(claim.title)}\n"
         f"<code>{esc(claim.slug)}</code>\n\n"
-        f"{e('warn')} Подтверждай, только если это правда его подарок."
+        f"{e('profile')} Заявитель · {esc(user.full_name)} · @{esc(user.username or '—')}\n"
+        f"{e('id')} <code>{user.id}</code>\n"
+        f"{e('next')} Передавал с · {esc(sender_username or '—')}\n\n"
+        f"{e('warn')} Сверь скриншот и юзернейм, прежде чем подтверждать."
     )
+    keyboard = claim_decision(claim.request_id)
+
     for admin_id in config.admin_ids:
         try:
-            await bot.send_message(admin_id, text, reply_markup=claim_decision(claim.request_id))
-        except Exception:  # noqa: BLE001
+            if photo_id:
+                await bot.send_photo(
+                    admin_id, photo_id, caption=caption, reply_markup=keyboard
+                )
+            else:
+                await bot.send_message(admin_id, caption, reply_markup=keyboard)
+        except Exception:  # noqa: BLE001 — админ мог не запускать бота
             logger.warning("Не удалось отправить заявку админу %s", admin_id)

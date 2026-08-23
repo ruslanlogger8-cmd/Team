@@ -15,6 +15,10 @@ _LINK = re.compile(
     r"(?:https?://)?(?:t\.me|telegram\.me)/nft/([A-Za-z0-9_\-]+)", re.IGNORECASE
 )
 _BARE = re.compile(r"^@?([A-Za-z][A-Za-z0-9_]*-\d+)$")
+# @ivan, ivan, https://t.me/ivan — Telegram допускает 5..32 символа
+_USERNAME = re.compile(
+    r"^(?:(?:https?://)?t\.me/)?@?([A-Za-z][A-Za-z0-9_]{4,31})$", re.IGNORECASE
+)
 
 
 def parse_nft_slug(text: str) -> str | None:
@@ -35,6 +39,14 @@ def parse_nft_slug(text: str) -> str | None:
     if match:
         return match.group(1)
     return None
+
+
+def parse_username(text: str) -> str | None:
+    """Достаёт юзернейм аккаунта, с которого передавали подарок."""
+    if not text:
+        return None
+    match = _USERNAME.match(text.strip())
+    return "@" + match.group(1) if match else None
 
 
 class ClaimResult(str, Enum):
@@ -62,7 +74,14 @@ class Claim:
         )
 
 
-async def submit_claim(db, worker_id: int, text: str, needs_approval: bool = True) -> Claim:
+async def submit_claim(
+    db,
+    worker_id: int,
+    text: str,
+    needs_approval: bool = True,
+    sender_username: str = "",
+    photo_id: str = "",
+) -> Claim:
     """Разбирает ссылку и оформляет притязание воркера на подарок.
 
     Слаг подарка публичный — он виден в ссылке любому. Поэтому свободный
@@ -97,7 +116,7 @@ async def submit_claim(db, worker_id: int, text: str, needs_approval: bool = Tru
             return Claim(ClaimResult.TAKEN, slug, title, status)
         return Claim(ClaimResult.ATTACHED, slug, title, status)
 
-    request_id = await db.add_claim_request(slug, worker_id)
+    request_id = await db.add_claim_request(slug, worker_id, sender_username, photo_id)
     if request_id is None:
         return Claim(ClaimResult.DUPLICATE, slug, title, status)
     return Claim(ClaimResult.PENDING, slug, title, status, request_id)
