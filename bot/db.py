@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass
+
+import sqlite3
 
 import aiosqlite
 
@@ -62,7 +65,26 @@ class Database:
         self._lock = asyncio.Lock()
 
     async def connect(self) -> None:
-        self._conn = await aiosqlite.connect(self._path)
+        # Каталог для базы может отсутствовать (например, volume в Railway
+        # прописан в DB_PATH, но не примонтирован) — создаём заранее.
+        parent = os.path.dirname(os.path.abspath(self._path))
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Не удалось создать каталог для базы: {parent} ({exc}). "
+                f"Если это Railway — подключи Volume с mount path {parent}, "
+                f"либо укажи DB_PATH=payouts.db для запуска без тома."
+            ) from None
+
+        try:
+            self._conn = await aiosqlite.connect(self._path)
+        except sqlite3.OperationalError as exc:
+            raise RuntimeError(
+                f"Не удалось открыть базу {self._path} ({exc}). "
+                f"Проверь, что каталог {parent} существует и доступен на запись. "
+                f"В Railway это Settings → Volumes → Add Volume с mount path {parent}."
+            ) from None
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
