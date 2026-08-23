@@ -1,6 +1,6 @@
 # pip install -r requirements.txt
 aiogram>=3.30,<4      # ButtonStyle (цветные кнопки) и icon_custom_emoji_id
-tonutils>=0.3
+tonutils>=2.2,<3   # API 2.x: contracts.wallet, суммы в нанотонах
 aiosqlite>=0.19
 python-dotenv>=1.0
 
