@@ -142,6 +142,10 @@ async def main() -> None:
     background: list[asyncio.Task] = []
     try:
         payer = create_payer(config)
+        if hasattr(payer, "prepare"):
+            # Подключаемся и определяем версию кошелька до приёма сообщений,
+            # чтобы проблема с кошельком вылезла на старте, а не на выплате.
+            await payer.prepare()
         logger.info("Горячий кошелёк: %s (testnet=%s)", payer.address, config.is_testnet)
 
         bot = Bot(

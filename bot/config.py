@@ -132,7 +132,7 @@ class Config:
             bot_token=token,
             admin_ids=admins,
             wallet_mnemonic=mnemonic,
-            wallet_version=os.environ.get("WALLET_VERSION", "v4r2").lower().strip(),
+            wallet_version=os.environ.get("WALLET_VERSION", "auto").lower().strip() or "auto",
             is_testnet=os.environ.get("TON_TESTNET", "false").lower() in ("1", "true", "yes"),
             toncenter_api_key=os.environ.get("TONCENTER_API_KEY", "").strip(),
             min_withdraw_nano=int(round(min_ton * 1_000_000_000)),
