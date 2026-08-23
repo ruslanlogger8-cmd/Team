@@ -56,6 +56,13 @@ class Worker:
 
 
 class Database:
+    """Слой доступа к SQLite.
+
+    ИНВАРИАНТ: каждый метод, который пишет и коммитит, обязан держать self._lock.
+    aiosqlite использует одно соединение на процесс, поэтому коммит без лока
+    закрывает чужую открытую транзакцию — деньги при этом теряются или задваиваются.
+    """
+
     def __init__(self, path: str) -> None:
         self._path = path
         self._conn: aiosqlite.Connection | None = None
@@ -103,16 +110,17 @@ class Database:
         return self._conn
 
     async def upsert_worker(self, user_id: int, username: str | None, full_name: str) -> None:
-        await self.conn.execute(
-            """
-            INSERT INTO workers (user_id, username, full_name, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,
-                                               full_name=excluded.full_name
-            """,
-            (user_id, username, full_name, int(time.time())),
-        )
-        await self.conn.commit()
+        async with self._lock:
+            await self.conn.execute(
+                """
+                INSERT INTO workers (user_id, username, full_name, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,
+                                                   full_name=excluded.full_name
+                """,
+                (user_id, username, full_name, int(time.time())),
+            )
+            await self.conn.commit()
 
     async def get_worker(self, user_id: int) -> Worker | None:
         cur = await self.conn.execute(
@@ -125,8 +133,11 @@ class Database:
         return Worker(row["user_id"], row["username"], row["full_name"], row["wallet"], row["balance_nano"])
 
     async def set_wallet(self, user_id: int, wallet: str) -> None:
-        await self.conn.execute("UPDATE workers SET wallet=? WHERE user_id=?", (wallet, user_id))
-        await self.conn.commit()
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE workers SET wallet=? WHERE user_id=?", (wallet, user_id)
+            )
+            await self.conn.commit()
 
     async def credit(self, user_id: int, amount_nano: int, admin_id: int, comment: str) -> int:
         """Начисляет баланс. Возвращает новый баланс. Работник должен существовать."""
@@ -187,11 +198,12 @@ class Database:
                 raise
 
     async def mark_paid(self, withdrawal_id: int, tx_hash: str) -> None:
-        await self.conn.execute(
-            "UPDATE withdrawals SET status='paid', tx_hash=?, finished_at=? WHERE id=?",
-            (tx_hash, int(time.time()), withdrawal_id),
-        )
-        await self.conn.commit()
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE withdrawals SET status='paid', tx_hash=?, finished_at=? WHERE id=?",
+                (tx_hash, int(time.time()), withdrawal_id),
+            )
+            await self.conn.commit()
 
     async def mark_failed_and_refund(self, withdrawal_id: int, user_id: int, amount_nano: int, error: str) -> None:
         """Возврат зарезервированных средств на баланс при сбое выплаты."""
@@ -204,6 +216,46 @@ class Database:
                 "UPDATE workers SET balance_nano=balance_nano+? WHERE user_id=?",
                 (amount_nano, user_id),
             )
+            await self.conn.commit()
+
+    async def find_stuck_withdrawals(self, older_than_sec: int = 300) -> list[tuple[int, int, int, str]]:
+        """Заявки, зависшие в 'processing' — процесс умер между резервом и отправкой.
+
+        Возвращает (id, user_id, amount_nano, wallet). Автоматически НЕ возвращаем
+        средства: транзакция могла уйти в сеть до падения, и возврат означал бы
+        двойную выплату. Требуется ручная проверка по адресу в блокчейне.
+        """
+        threshold = int(time.time()) - older_than_sec
+        cur = await self.conn.execute(
+            "SELECT id, user_id, amount_nano, wallet FROM withdrawals "
+            "WHERE status='processing' AND created_at < ? ORDER BY id",
+            (threshold,),
+        )
+        return [(r["id"], r["user_id"], r["amount_nano"], r["wallet"]) for r in await cur.fetchall()]
+
+    async def resolve_stuck(self, withdrawal_id: int, sent: bool, note: str = "") -> None:
+        """Закрывает зависшую заявку: sent=True — деньги ушли, False — вернуть на баланс."""
+        async with self._lock:
+            cur = await self.conn.execute(
+                "SELECT user_id, amount_nano, status FROM withdrawals WHERE id=?", (withdrawal_id,)
+            )
+            row = await cur.fetchone()
+            if row is None or row["status"] != "processing":
+                raise ValueError("not_processing")
+            if sent:
+                await self.conn.execute(
+                    "UPDATE withdrawals SET status='paid', tx_hash=?, finished_at=? WHERE id=?",
+                    (note or "восстановлено вручную", int(time.time()), withdrawal_id),
+                )
+            else:
+                await self.conn.execute(
+                    "UPDATE withdrawals SET status='failed', error=?, finished_at=? WHERE id=?",
+                    (note or "возврат после сбоя", int(time.time()), withdrawal_id),
+                )
+                await self.conn.execute(
+                    "UPDATE workers SET balance_nano=balance_nano+? WHERE user_id=?",
+                    (row["amount_nano"], row["user_id"]),
+                )
             await self.conn.commit()
 
     async def get_top(self, limit: int = 10) -> list[tuple[str, int, int]]:

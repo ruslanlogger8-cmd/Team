@@ -12,7 +12,7 @@ import os
 import tempfile
 
 from bot.db import Database
-from bot.utils import fmt_ton, ton_to_nano
+from bot.utils import build_ton_address, fmt_ton, ton_to_nano
 
 MIN_WITHDRAW = ton_to_nano("0.1")
 
@@ -86,7 +86,7 @@ async def main() -> None:
         line(f"{name} (id {uid}) зарегистрирован, баланс {fmt_ton(0)}")
 
     step("2.", "Работники задают TON-кошельки")
-    wallets = {777001: "UQ" + "A" * 46, 777002: "UQ" + "B" * 46}
+    wallets = {uid: build_ton_address(os.urandom(32)) for uid in WORKERS}
     for uid, wallet in wallets.items():
         await db.set_wallet(uid, wallet)
         line(f"{WORKERS[uid][1]}: {wallet[:16]}...")
