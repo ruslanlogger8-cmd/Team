@@ -516,3 +516,106 @@ async def sync_gifts(
         f"{e('warn')} Без отправителя · <b>{summary.get('unattributed', 0)}</b>\n"
         f"{e('time')} Уже были · <b>{summary.get('duplicate', 0)}</b>"
     )
+
+
+@router.callback_query(F.data.startswith("pay:"))
+async def pay_now(call: CallbackQuery, db: Database, config: Config, payer) -> None:
+    """Выплатить баланс воркера одной кнопкой."""
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    try:
+        worker_id = int(call.data.split(":", 1)[1])
+    except ValueError:
+        await call.answer("Битая кнопка", show_alert=True)
+        return
+
+    worker = await db.get_worker(worker_id)
+    if worker is None:
+        await call.answer("Воркер не найден", show_alert=True)
+        return
+
+    await call.answer()
+    await safe_edit(call, f"{e('time')} Отправляю {fmt_ton(worker.balance_nano)}…")
+
+    result = await execute_payout(
+        db, payer, worker_id, config.min_withdraw_nano,
+        max_single_nano=config.max_payout_nano,
+        max_daily_nano=config.max_daily_payout_nano,
+    )
+
+    if result.status == "paid":
+        await safe_edit(
+            call,
+            f"{e('check')} <b>Выплачено</b>\n"
+            f"{RULE}\n"
+            f"{e('profile')} Воркер · <code>{worker_id}</code>\n"
+            f"{e('coin')} <b>{fmt_ton(result.amount_nano)}</b>\n"
+            f"{e('link')} <code>{esc(result.tx_hash)}</code>",
+        )
+        await _notify(
+            call, worker_id,
+            f"{e('check')} <b>Выплата отправлена</b>\n"
+            f"{RULE}\n"
+            f"{e('coin')} <b>{fmt_ton(result.amount_nano)}</b>\n"
+            f"{e('link')} <code>{esc(result.tx_hash)}</code>",
+        )
+        return
+
+    reasons = {
+        "skipped": "нечего выплачивать · нет кошелька, мало на балансе "
+                   "или прошлая заявка ещё в обработке",
+        "blocked": f"остановлено лимитом · {esc(result.error)}",
+        "failed": f"не прошло · {esc(result.error)}, средства возвращены",
+    }
+    await safe_edit(
+        call,
+        f"{e('cross')} <b>Выплата не выполнена</b>\n"
+        f"{RULE}\n"
+        f"{e('profile')} Воркер · <code>{worker_id}</code>\n"
+        f"{e('dot')} {reasons.get(result.status, result.status)}",
+    )
+
+
+@router.message(Command("pay"))
+async def pay_command(message: Message, db: Database, config: Config) -> None:
+    """/pay <id> — кнопка выплаты для конкретного воркера."""
+    if not _is_admin(message.from_user.id, config):
+        return
+
+    from ..keyboards import pay_button
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        pending = [
+            w for w in await db.all_workers_with_balance()
+        ]
+        if not pending:
+            await message.answer(f"{e('check')} Балансов к выплате нет.")
+            return
+        await message.answer(f"{e('withdraw')} <b>Ждут выплаты</b>")
+        for worker_id, name, balance in pending[:15]:
+            await message.answer(
+                f"{e('profile')} {esc(name)} · <code>{worker_id}</code>\n"
+                f"{e('coin')} <b>{fmt_ton(balance)}</b>",
+                reply_markup=pay_button(worker_id),
+            )
+        return
+
+    try:
+        worker_id = int(parts[1].split()[0])
+    except ValueError:
+        await message.answer(f"{e('cross')} ID должен быть числом.")
+        return
+
+    worker = await db.get_worker(worker_id)
+    if worker is None:
+        await message.answer(f"{e('cross')} Воркер не найден.")
+        return
+
+    await message.answer(
+        f"{e('profile')} {esc(worker.full_name)} · <code>{worker_id}</code>\n"
+        f"{e('coin')} Баланс · <b>{fmt_ton(worker.balance_nano)}</b>",
+        reply_markup=pay_button(worker_id),
+    )

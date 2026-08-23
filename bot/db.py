@@ -574,6 +574,14 @@ class Database:
         row = await cur.fetchone()
         return row["s"], row["c"]
 
+    async def all_workers_with_balance(self) -> list[tuple[int, str, int]]:
+        """Воркеры, у которых есть что выплачивать."""
+        cur = await self.conn.execute(
+            "SELECT user_id, full_name, balance_nano FROM workers "
+            "WHERE balance_nano > 0 ORDER BY balance_nano DESC"
+        )
+        return [(r["user_id"], r["full_name"], r["balance_nano"]) for r in await cur.fetchall()]
+
     async def stats(self) -> dict[str, int]:
         cur = await self.conn.execute("SELECT COUNT(*) AS c, COALESCE(SUM(balance_nano),0) AS s FROM workers")
         w = await cur.fetchone()

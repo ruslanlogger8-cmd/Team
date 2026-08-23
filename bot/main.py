@@ -68,7 +68,7 @@ async def _report_stuck(bot: Bot, db: Database, config: Config) -> None:
 
 
 async def _start_gifts(
-    db: Database, config: Config, bot: Bot, dp: Dispatcher
+    db: Database, config: Config, bot: Bot, dp: Dispatcher, payer=None
 ) -> list[asyncio.Task]:
     """Поднимает подсистему подарков, если она включена.
 
@@ -157,7 +157,9 @@ async def _start_gifts(
 
     tasks = [
         asyncio.create_task(watcher.start(on_gift), name="gift-watcher"),
-        asyncio.create_task(run_poller(service, config, bot), name="gift-poller"),
+        asyncio.create_task(
+            run_poller(service, config, bot, db, payer), name="gift-poller"
+        ),
     ]
     # Хендлеры получают их по имени аргумента — команда /sync дёргает
     # те же объекты, что и фоновый цикл.
@@ -202,7 +204,7 @@ async def main() -> None:
         await _set_commands(bot)
         await _report_stuck(bot, db, config)
 
-        background = await _start_gifts(db, config, bot, dp)
+        background = await _start_gifts(db, config, bot, dp, payer)
 
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("Бот запущен, ожидаю сообщения")

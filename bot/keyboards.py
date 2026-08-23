@@ -125,3 +125,9 @@ def claim_decision(request_id: int) -> InlineKeyboardMarkup:
             btn("Отклонить", f"cl:no:{request_id}", DANGER, "cross"),
         ]]
     )
+
+
+def pay_button(worker_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[btn("Выплатить сейчас", f"pay:{worker_id}", SUCCESS, "withdraw")]]
+    )
