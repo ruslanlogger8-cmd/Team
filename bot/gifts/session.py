@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import gzip
 import logging
 import os
 from pathlib import Path
@@ -47,6 +48,16 @@ def restore_mrkt_session(config) -> None:
 
     if not raw:
         raise RuntimeError("MRKT_SESSION_B64 пустая после декодирования")
+
+    # Файл сессии — SQLite, в base64 он вылезает за лимит переменной в Railway
+    # (32768 символов), поэтому его сжимают. Принимаем оба вида: по сигнатуре
+    # gzip видно, надо ли распаковывать.
+    if raw[:2] == b"\x1f\x8b":
+        try:
+            raw = gzip.decompress(raw)
+        except OSError as exc:
+            raise RuntimeError(f"MRKT_SESSION_B64 не распаковывается: {exc}") from None
+        logger.info("Сессия MRKT распакована из gzip")
 
     workdir.mkdir(parents=True, exist_ok=True)
     target.write_bytes(raw)

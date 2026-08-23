@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import os
 import sys
 from pathlib import Path
@@ -49,7 +50,9 @@ async def main() -> None:
         print(f"Файл сессии не появился по пути {path} — проверь workdir.")
         sys.exit(1)
 
-    encoded = base64.b64encode(path.read_bytes()).decode()
+    # Сжимаем: в Railway переменная ограничена 32768 символами, а SQLite-файл
+    # сессии в чистом base64 выходит за лимит.
+    encoded = base64.b64encode(gzip.compress(path.read_bytes())).decode()
     print()
     print("=" * 72)
     print("MRKT_SESSION_B64=" + encoded)
