@@ -19,7 +19,7 @@ from ..keyboards import (
 )
 from ..payout import execute_payout
 from ..states import ClaimForm, WalletForm, WithdrawForm
-from ..ui import RULE, reset_state, safe_edit, send_screen
+from ..ui import reset_state, safe_edit, send_screen
 from ..utils import fmt_ton, is_valid_ton_address, parse_ton
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,6 @@ def _dt(timestamp: int) -> str:
 def _menu_text(name: str, config: Config, balance_nano: int | None) -> str:
     head = (
         f"{e('logo')} <b>{esc(config.team_name)}</b>\n"
-        f"{RULE}\n"
         f"{e('wave')} Привет, <b>{esc(name)}</b>\n"
     )
     if balance_nano is not None:
@@ -97,7 +96,6 @@ async def profile(call: CallbackQuery, db: Database, state: FSMContext) -> None:
     await safe_edit(
         call,
         f"{e('profile')} <b>Профиль</b>\n"
-        f"{RULE}\n"
         f"{e('id')} Имя · <b>{esc(worker.full_name)}</b>\n"
         f"{e('dot')} ID · <code>{worker.user_id}</code>\n"
         f"{e('wallet')} Кошелёк · {wallet}\n\n"
@@ -127,7 +125,6 @@ async def balance(call: CallbackQuery, db: Database, config: Config, state: FSMC
     await safe_edit(
         call,
         f"{e('balance')} <b>Баланс</b>\n"
-        f"{RULE}\n"
         f"{e('coin')} Доступно · <b>{fmt_ton(worker.balance_nano)}</b>\n\n"
         f"{hint}",
         back_menu(),
@@ -149,8 +146,8 @@ async def top(call: CallbackQuery, db: Database, state: FSMContext) -> None:
         body = "\n".join(lines)
     await safe_edit(
         call,
-        f"{e('top')} <b>Топ воркеров</b>\n"
-        f"{RULE}\n{body}\n\n"
+        f"{e('top')} <b>Топ воркеров</b>\n\n"
+        f"{body}\n\n"
         f"{e('star')} Рейтинг по сумме выплат",
         back_menu(),
     )
@@ -185,11 +182,11 @@ async def history(call: CallbackQuery, db: Database, state: FSMContext) -> None:
             if tx_hash:
                 block += f"\n<code>{esc(tx_hash)}</code>"
             blocks.append(block)
-        body = f"\n\n{RULE}\n".join(blocks)
+        body = "\n\n".join(blocks)
 
     await safe_edit(
         call,
-        f"{e('history')} <b>История выплат</b>\n{RULE}\n{body}",
+        f"{e('history')} <b>История выплат</b>\n\n{body}",
         history_nav(page, total_pages),
     )
     await call.answer()
@@ -205,7 +202,6 @@ async def wallet_screen(call: CallbackQuery, db: Database, state: FSMContext) ->
     await safe_edit(
         call,
         f"{e('wallet')} <b>Кошелёк</b>\n"
-        f"{RULE}\n"
         f"{e('dot')} Текущий · {current}\n\n"
         f"{e('shield')} Адрес проверяется по контрольной сумме — "
         f"выплата не уйдёт по ошибочному адресу.",
@@ -220,7 +216,6 @@ async def wallet_prompt(call: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(
         call,
         f"{e('key')} <b>Новый адрес кошелька</b>\n"
-        f"{RULE}\n"
         f"{e('dot')} Пришли адрес TON одним сообщением.\n"
         f"{e('dot')} Начинается с <code>UQ</code> или <code>EQ</code>, 48 символов.",
         back_menu(),
@@ -234,7 +229,6 @@ async def wallet_save(message: Message, state: FSMContext, db: Database, config:
     if not is_valid_ton_address(address):
         await message.answer(
             f"{e('cross')} <b>Адрес не прошёл проверку</b>\n"
-            f"{RULE}\n"
             f"{e('dot')} Скопируй адрес целиком из кошелька.\n"
             f"{e('dot')} Проверяется контрольная сумма, поэтому даже одна "
             f"опечатка не пройдёт — так деньги не уйдут в никуда.\n\n"
@@ -247,7 +241,7 @@ async def wallet_save(message: Message, state: FSMContext, db: Database, config:
     await send_screen(
         message,
         f"{e('check')} <b>Кошелёк сохранён</b>\n"
-        f"{RULE}\n<code>{esc(address)}</code>",
+        f"<code>{esc(address)}</code>",
         main_menu(is_admin=message.from_user.id in config.admin_ids),
         photo=config.menu_photo or None,
     )
@@ -276,7 +270,6 @@ async def withdraw_request(
     await safe_edit(
         call,
         f"{e('withdraw')} <b>Вывод средств</b>\n"
-        f"{RULE}\n"
         f"{e('balance')} Доступно · <b>{fmt_ton(worker.balance_nano)}</b>\n"
         f"{e('wallet')} На адрес\n<code>{esc(worker.wallet)}</code>\n\n"
         f"{e('dot')} Минимум · {fmt_ton(config.min_withdraw_nano)}",
@@ -298,7 +291,6 @@ async def withdraw_amount_prompt(
     await safe_edit(
         call,
         f"{e('coin')} <b>Сколько вывести</b>\n"
-        f"{RULE}\n"
         f"{e('balance')} Доступно · <b>{fmt_ton(worker.balance_nano)}</b>\n"
         f"{e('dot')} Минимум · {fmt_ton(config.min_withdraw_nano)}\n\n"
         f"{e('dot')} Пришли сумму числом · <code>1.5</code>\n"
@@ -323,7 +315,6 @@ async def withdraw_amount_entered(
     except ValueError:
         await message.answer(
             f"{e('cross')} <b>Это не сумма</b>\n"
-            f"{RULE}\n"
             f"{e('dot')} Пришли число · <code>1.5</code> или <code>0,3</code>"
         )
         return
@@ -336,7 +327,6 @@ async def withdraw_amount_entered(
     if amount > worker.balance_nano:
         await message.answer(
             f"{e('cross')} <b>Столько нет на балансе</b>\n"
-            f"{RULE}\n"
             f"{e('balance')} Доступно · <b>{fmt_ton(worker.balance_nano)}</b>"
         )
         return
@@ -348,7 +338,6 @@ async def withdraw_amount_entered(
     rest = worker.balance_nano - amount
     await message.answer(
         f"{e('withdraw')} <b>Подтверждение вывода</b>\n"
-        f"{RULE}\n"
         f"{e('coin')} К выводу · <b>{fmt_ton(amount)}</b>\n"
         f"{e('balance')} Останется · {fmt_ton(rest)}\n"
         f"{e('wallet')} На адрес\n<code>{esc(worker.wallet)}</code>",
@@ -366,7 +355,6 @@ async def withdraw_all(call: CallbackQuery, db: Database, state: FSMContext) -> 
     await safe_edit(
         call,
         f"{e('withdraw')} <b>Подтверждение вывода</b>\n"
-        f"{RULE}\n"
         f"{e('coin')} К выводу · <b>{fmt_ton(worker.balance_nano)}</b>\n"
         f"{e('wallet')} На адрес\n<code>{esc(worker.wallet)}</code>\n\n"
         f"{e('warn')} Отправляется весь баланс. Операция необратима.",
@@ -395,7 +383,6 @@ async def withdraw_confirm(
         await safe_edit(
             call,
             f"{e('warn')} <b>Заявка уже обработана</b>\n"
-            f"{RULE}\n"
             f"{e('dot')} Загляни в «Историю», чтобы увидеть её статус.",
             back_menu(),
         )
@@ -416,7 +403,6 @@ async def withdraw_confirm(
         await safe_edit(
             call,
             f"{e('cross')} <b>Выводить нечего</b>\n"
-            f"{RULE}\n"
             f"{e('dot')} Баланс ниже минимума, не указан кошелёк "
             f"или прошлая заявка ещё в обработке.",
             back_menu(),
@@ -427,7 +413,6 @@ async def withdraw_confirm(
         await safe_edit(
             call,
             f"{e('shield')} <b>Выплата остановлена лимитом</b>\n"
-            f"{RULE}\n"
             f"{e('dot')} {esc(result.error)}\n\n"
             f"{e('check')} Средства остались на балансе.\n"
             f"{e('dot')} Напиши администратору.",
@@ -440,7 +425,6 @@ async def withdraw_confirm(
         await safe_edit(
             call,
             f"{e('cross')} <b>Перевод не прошёл</b>\n"
-            f"{RULE}\n"
             f"{e('check')} Средства возвращены на баланс.\n"
             f"{e('dot')} Попробуй позже — администратор уведомлён.",
             back_menu(),
@@ -458,7 +442,6 @@ async def withdraw_confirm(
     await safe_edit(
         call,
         f"{e('check')} <b>Выплата отправлена</b>\n"
-        f"{RULE}\n"
         f"{e('coin')} Сумма · <b>{fmt_ton(result.amount_nano)}</b>{rest}\n"
         f"{e('link')} Транзакция\n<code>{esc(result.tx_hash)}</code>{demo}",
         back_menu(),
@@ -472,7 +455,6 @@ async def _alert_admins(bot, config: Config, result, user_id: int) -> None:
     )
     text = (
         f"{e('warn')} <b>{head}</b>\n"
-        f"{RULE}\n"
         f"{e('dot')} Заявка №{result.withdrawal_id}\n"
         f"{e('coin')} {fmt_ton(result.amount_nano)}\n"
         f"{e('profile')} Работник <code>{user_id}</code>\n"
@@ -506,7 +488,6 @@ async def claim_screen(call: CallbackQuery, config: Config, state: FSMContext) -
     await safe_edit(
         call,
         f"{e('gift')} <b>Заявка на подарок</b>\n"
-        f"{RULE}\n"
         f"{e('dot')} Отправил подарок и хочешь закрепить его за собой — "
         f"пришли ссылку на него.\n\n"
         f"{e('shield')} Нужны три вещи · ссылка, юзернейм отправителя, "
@@ -525,7 +506,6 @@ async def claim_prompt(call: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(
         call,
         f"{e('link')} <b>Ссылка на подарок</b>\n"
-        f"{RULE}\n"
         f"{e('dot')} Шаг 1 из 3 · ссылка на подарок\n"
         f"{e('dot')} Открой подарок в Telegram, нажми «Поделиться» "
         f"и пришли ссылку сюда.\n\n"
@@ -542,7 +522,6 @@ async def claim_link(message: Message, state: FSMContext, db: Database) -> None:
     if slug is None:
         await message.answer(
             f"{e('cross')} <b>Ссылку не разобрал</b>\n"
-            f"{RULE}\n"
             f"{e('dot')} Нужна ссылка вида <code>t.me/nft/PlushPepe-42</code>\n"
             f"{e('dot')} Открой подарок → «Поделиться» → скопируй ссылку"
         )
@@ -555,7 +534,6 @@ async def claim_link(message: Message, state: FSMContext, db: Database) -> None:
         await state.clear()
         await message.answer(
             f"{e('cross')} <b>Такой подарок не поступал</b>\n"
-            f"{RULE}\n"
             f"{e('dot')} <code>{esc(slug)}</code>\n\n"
             f"{e('time')} Если только что отправил — подожди минуту и повтори.\n"
             f"{e('warn')} Проверь, что отправлял на нужный аккаунт.",
@@ -568,7 +546,7 @@ async def claim_link(message: Message, state: FSMContext, db: Database) -> None:
         await state.clear()
         await message.answer(
             f"{e('check')} <b>Этот подарок уже за тобой</b>\n"
-            f"{RULE}\n{e('gift')} {esc(gift['title'] or slug)}",
+            f"{e('gift')} {esc(gift['title'] or slug)}",
             reply_markup=back_menu(),
         )
         return
@@ -576,7 +554,6 @@ async def claim_link(message: Message, state: FSMContext, db: Database) -> None:
         await state.clear()
         await message.answer(
             f"{e('warn')} <b>Подарок уже закреплён</b>\n"
-            f"{RULE}\n"
             f"{e('gift')} {esc(gift['title'] or slug)}\n\n"
             f"{e('shield')} Он числится за другим воркером. "
             f"Если это ошибка — напиши администратору.",
@@ -588,7 +565,6 @@ async def claim_link(message: Message, state: FSMContext, db: Database) -> None:
     await state.set_state(ClaimForm.waiting_username)
     await message.answer(
         f"{e('profile')} <b>С какого аккаунта передавал</b>\n"
-        f"{RULE}\n"
         f"{e('gift')} {esc(gift['title'] or slug)}\n\n"
         f"{e('dot')} Пришли юзернейм аккаунта, с которого ушёл подарок.\n"
         f"{e('dot')} Вид · <code>@username</code>\n\n"
@@ -602,7 +578,6 @@ async def claim_username(message: Message, state: FSMContext) -> None:
     if username is None:
         await message.answer(
             f"{e('cross')} <b>Это не юзернейм</b>\n"
-            f"{RULE}\n"
             f"{e('dot')} Пришли в виде <code>@username</code>\n"
             f"{e('dot')} От 5 до 32 символов, латиница, цифры и подчёркивания"
         )
@@ -612,7 +587,6 @@ async def claim_username(message: Message, state: FSMContext) -> None:
     await state.set_state(ClaimForm.waiting_photo)
     await message.answer(
         f"{e('link')} <b>Скриншот передачи</b>\n"
-        f"{RULE}\n"
         f"{e('profile')} Аккаунт · {esc(username)}\n\n"
         f"{e('dot')} Пришли скриншот, где видно передачу подарка менеджеру.\n"
         f"{e('shield')} Без него заявку не примут."
@@ -644,7 +618,7 @@ async def claim_photo(
     if claim.result is ClaimResult.DUPLICATE:
         await message.answer(
             f"{e('time')} <b>На этот подарок уже есть заявка</b>\n"
-            f"{RULE}\n{e('dot')} {esc(claim.title)}\n\n"
+            f"{e('dot')} {esc(claim.title)}\n\n"
             f"{e('shield')} Администратор её рассматривает.",
             reply_markup=keyboard,
         )
@@ -653,7 +627,6 @@ async def claim_photo(
     if claim.result is ClaimResult.TAKEN:
         await message.answer(
             f"{e('cross')} <b>Заявка отклонена</b>\n"
-            f"{RULE}\n"
             f"{e('shield')} Telegram сообщает, что этот подарок прислал "
             f"другой аккаунт — не тот, что ты указал.\n\n"
             f"{e('dot')} Проверь юзернейм, с которого передавал.\n"
@@ -666,7 +639,6 @@ async def claim_photo(
         icon_key, label = GIFT_STATUS.get(claim.status, ("dot", claim.status))
         await message.answer(
             f"{e('check')} <b>Проверено и закреплено</b>\n"
-            f"{RULE}\n"
             f"{e('gift')} {esc(claim.title)}\n"
             f"{e(icon_key)} Статус · {label}\n\n"
             f"{e('shield')} Отправитель сверен с данными Telegram — "
@@ -683,7 +655,6 @@ async def claim_photo(
         )
         await message.answer(
             f"{e('time')} <b>Заявка отправлена на проверку</b>\n"
-            f"{RULE}\n"
             f"{e('gift')} {esc(claim.title)}\n"
             f"{e('profile')} Отправлено с · {esc(data.get('sender_username', ''))}\n"
             f"{e('check')} Скриншот приложен\n\n"
@@ -696,7 +667,6 @@ async def claim_photo(
     icon_key, label = GIFT_STATUS.get(claim.status, ("dot", claim.status))
     await message.answer(
         f"{e('check')} <b>Заявка принята</b>\n"
-        f"{RULE}\n"
         f"{e('gift')} {esc(claim.title)}\n"
         f"{e(icon_key)} Статус · {label}\n\n"
         f"{e('star')} После продажи получишь <b>{config.worker_share_percent}%</b> "
@@ -709,7 +679,6 @@ async def claim_photo(
 async def claim_photo_missing(message: Message) -> None:
     await message.answer(
         f"{e('warn')} <b>Нужен именно скриншот</b>\n"
-        f"{RULE}\n"
         f"{e('dot')} Пришли картинкой, где видно передачу подарка.\n"
         f"{e('dot')} Файлом или текстом не подойдёт."
     )
@@ -734,7 +703,7 @@ async def my_gifts(call: CallbackQuery, db: Database, state: FSMContext) -> None
             blocks.append(block)
         body = "\n\n".join(blocks)
 
-    await safe_edit(call, f"{e('gift')} <b>Мои подарки</b>\n{RULE}\n{body}", claim_menu())
+    await safe_edit(call, f"{e('gift')} <b>Мои подарки</b>\n{body}", claim_menu())
     await call.answer()
 
 
@@ -744,7 +713,6 @@ async def _notify_claim(bot, config: Config, claim, user, sender_username, photo
 
     caption = (
         f"{e('gift')} <b>Заявка на подарок</b>\n"
-        f"{RULE}\n"
         f"{e('dot')} {esc(claim.title)}\n"
         f"<code>{esc(claim.slug)}</code>\n\n"
         f"{e('profile')} Заявитель · {esc(user.full_name)} · @{esc(user.username or '—')}\n"

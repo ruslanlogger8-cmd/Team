@@ -50,21 +50,20 @@ class TestNoHardcodedSecrets:
                 assert value in ("", "word1 word2 ... word24"), f"реальное значение в .env.example: {line}"
 
 
-def test_rule_is_single_and_short():
-    """Разделитель — один на весь бот и не длиннее ширины экрана телефона.
+def test_no_divider_lines():
+    """Линий-разделителей в текстах для пользователя нет.
 
-    Длинная линия переносится на вторую строку и выглядит как обрывок,
-    а три копии константы разъезжаются при правке.
+    На телефоне такая линия переносилась на вторую строку и выглядела как
+    обрывок, поэтому убрана совсем. Смотрим только строковые литералы:
+    в комментариях к коду разделители никому не мешают.
     """
-    from bot.ui import RULE
-
-    assert set(RULE) == {"━"}
-    assert len(RULE) <= 12, "линия переносится на телефоне"
-
     root = pathlib.Path(__file__).resolve().parents[1] / "bot"
-    duplicates = [
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*.py")
-        if path.name != "ui.py" and 'RULE = "' in path.read_text(encoding="utf-8")
-    ]
-    assert not duplicates, f"копии RULE вне bot/ui.py: {duplicates}"
+    bars = ("\u2501", "\u2500", "\u2015")
+    offenders = []
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if any(ch in node.value for ch in bars):
+                    offenders.append(f"{path.relative_to(root).as_posix()}:{node.lineno}")
+    assert not offenders, f"вернулась линия-разделитель: {offenders}"

@@ -8,7 +8,6 @@ from ..config import Config
 from ..db import Database
 from ..emoji import e, esc
 from ..payout import execute_payout
-from ..ui import RULE
 from ..utils import fmt_ton
 from .service import GiftService
 
@@ -29,7 +28,6 @@ async def run_poller(
                     await notify(
                         bot, config,
                         f"{e('next')} <b>Подарок отправлен на MRKT</b>\n"
-                        f"{RULE}\n"
                         f"{e('dot')} <code>{esc(slug)}</code>\n"
                         f"{e('time')} Появится в инвентаре — выставим на продажу",
                     )
@@ -44,7 +42,6 @@ async def run_poller(
                 await notify(
                     bot, config,
                     f"{e('up')} <b>Подарок выставлен</b>\n"
-                    f"{RULE}\n"
                     f"{e('gift')} {esc(listing.title)}\n"
                     f"{e('coin')} Цена · <b>{fmt_ton(listing.price_nano)}</b>\n"
                     f"{e('dot')} Флор {listing.source.value} · {fmt_ton(listing.floor_nano)}",
@@ -57,7 +54,6 @@ async def run_poller(
                 await notify(
                     bot, config,
                     f"{e('check')} <b>Подарок продан</b>\n"
-                    f"{RULE}\n"
                     f"{e('gift')} {esc(sale.title)}\n"
                     f"{e('coin')} Сумма · <b>{fmt_ton(sale.sold_nano)}</b>\n"
                     f"{e('withdraw')} Воркеру · <b>{fmt_ton(sale.share_nano)}</b>\n"
@@ -99,7 +95,6 @@ async def _pay_share(bot, db, payer, config: Config, sale) -> None:
         await notify(
             bot, config,
             f"{e('withdraw')} <b>К выплате</b>\n"
-            f"{RULE}\n"
             f"{e('profile')} Воркер · <code>{sale.worker_id}</code>\n"
             f"{e('coin')} Доля · <b>{fmt_ton(sale.share_nano)}</b>",
             markup=pay_button(sale.worker_id),
@@ -117,7 +112,6 @@ async def _pay_share(bot, db, payer, config: Config, sale) -> None:
         for target, text in (
             (sale.worker_id,
              f"{e('check')} <b>Выплата за подарок</b>\n"
-             f"{RULE}\n"
              f"{e('gift')} {esc(sale.title)}\n"
              f"{e('coin')} <b>{fmt_ton(result.amount_nano)}</b>\n"
              f"{e('link')} <code>{esc(result.tx_hash)}</code>"),
@@ -140,7 +134,6 @@ async def _pay_share(bot, db, payer, config: Config, sale) -> None:
     await notify(
         bot, config,
         f"{e('cross')} <b>Доля не выплачена</b>\n"
-        f"{RULE}\n"
         f"{e('profile')} Воркер · <code>{sale.worker_id}</code>\n"
         f"{e('warn')} {esc(result.error)}\n"
         f"{e('check')} Средства остались на балансе.",

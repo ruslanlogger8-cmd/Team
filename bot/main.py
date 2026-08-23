@@ -123,9 +123,8 @@ async def _start_gifts(
 
         from .emoji import e, esc
         from .gifts.poller import notify
-        from .ui import RULE
 
-        head = f"{e('gift')} <b>Пришёл подарок</b>\n{RULE}\n{e('dot')} {esc(gift.title or gift.slug)}"
+        head = f"{e('gift')} <b>Пришёл подарок</b>\n{e('dot')} {esc(gift.title or gift.slug)}"
         if outcome == "unattributed":
             text = (
                 f"{head}\n\n"

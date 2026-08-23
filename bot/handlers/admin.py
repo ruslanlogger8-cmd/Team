@@ -12,7 +12,7 @@ from ..db import Database
 from ..emoji import e, esc, premium_enabled
 from ..keyboards import admin_menu, back_menu
 from ..payout import execute_payout
-from ..ui import RULE, safe_edit
+from ..ui import safe_edit
 from ..utils import fmt_ton, parse_ton
 
 router = Router()
@@ -32,7 +32,6 @@ async def credit(message: Message, db: Database, config: Config, payer) -> None:
     if len(parts) < 3:
         await message.answer(
             f"{e('warn')} <b>Формат команды</b>\n"
-            f"{RULE}\n"
             f"<code>/credit ID СУММА [коммент]</code>\n\n"
             f"{e('dot')} Пример · <code>/credit 7712345678 1.5 за неделю</code>"
         )
@@ -68,7 +67,6 @@ async def credit(message: Message, db: Database, config: Config, payer) -> None:
     sign = "+" if amount_nano > 0 else ""
     await message.answer(
         f"{e('check')} <b>Начислено</b>\n"
-        f"{RULE}\n"
         f"{e('coin')} {sign}{fmt_ton(amount_nano)}\n"
         f"{e('profile')} Работник · <code>{target_id}</code>\n"
         f"{e('balance')} Новый баланс · <b>{fmt_ton(new_balance)}</b>"
@@ -76,7 +74,6 @@ async def credit(message: Message, db: Database, config: Config, payer) -> None:
     await _notify(
         message, target_id,
         f"{e('balance')} <b>Начисление</b>\n"
-        f"{RULE}\n"
         f"{e('coin')} {sign}{fmt_ton(amount_nano)}\n"
         f"{e('dot')} Баланс · <b>{fmt_ton(new_balance)}</b>",
     )
@@ -113,7 +110,6 @@ async def _auto_payout(message: Message, db: Database, config: Config, payer, us
     if result.status == "blocked":
         await message.answer(
             f"{e('shield')} <b>Автовыплата остановлена лимитом</b>\n"
-            f"{RULE}\n"
             f"{e('dot')} {esc(result.error)}\n"
             f"{e('check')} Средства остались на балансе воркера."
         )
@@ -122,7 +118,6 @@ async def _auto_payout(message: Message, db: Database, config: Config, payer, us
     if result.status == "failed":
         await message.answer(
             f"{e('cross')} <b>Автовыплата не прошла</b>\n"
-            f"{RULE}\n"
             f"{e('dot')} Заявка №{result.withdrawal_id}\n"
             f"{e('warn')} {esc(result.error)}\n"
             f"{e('check')} Средства возвращены на баланс."
@@ -132,14 +127,12 @@ async def _auto_payout(message: Message, db: Database, config: Config, payer, us
     demo = f"\n{e('warn')} Режим DRY_RUN" if config.dry_run else ""
     await message.answer(
         f"{e('withdraw')} <b>Автовыплата отправлена</b>\n"
-        f"{RULE}\n"
         f"{e('coin')} <b>{fmt_ton(result.amount_nano)}</b>\n"
         f"{e('link')} <code>{esc(result.tx_hash)}</code>{demo}"
     )
     await _notify(
         message, user_id,
         f"{e('check')} <b>Выплата отправлена</b>\n"
-        f"{RULE}\n"
         f"{e('coin')} <b>{fmt_ton(result.amount_nano)}</b>\n"
         f"{e('link')} <code>{esc(result.tx_hash)}</code>{demo}",
     )
@@ -155,7 +148,6 @@ async def resolve(message: Message, db: Database, config: Config) -> None:
     if len(parts) < 3 or parts[2].split()[0] not in ("sent", "refund"):
         await message.answer(
             f"{e('warn')} <b>Формат команды</b>\n"
-            f"{RULE}\n"
             f"<code>/resolve НОМЕР sent|refund</code>\n\n"
             f"{e('check')} <b>sent</b> · TON реально ушли, сверь адрес в блокчейне\n"
             f"{e('cross')} <b>refund</b> · не ушли, вернуть работнику на баланс"
@@ -196,7 +188,6 @@ async def attach_gift(message: Message, db: Database, config: Config) -> None:
         ) or f"{e('check')} Непривязанных подарков нет."
         await message.answer(
             f"{e('warn')} <b>Формат команды</b>\n"
-            f"{RULE}\n"
             f"<code>/gift SLUG ID_воркера</code>\n\n"
             f"{e('gift')} <b>Ждут привязки</b>\n{listing}"
         )
@@ -238,7 +229,6 @@ async def gifts_summary(message: Message, db: Database, config: Config) -> None:
     stats = await db.gift_stats()
     text = (
         f"{e('gift')} <b>Подарки</b>\n"
-        f"{RULE}\n"
         f"{e('dot')} Принято · <b>{stats['received']}</b>\n"
         f"{e('next')} Передано на маркет · <b>{stats.get('deposited', 0)}</b>\n"
         f"{e('up')} Выставлено · <b>{stats['listed']}</b>\n"
@@ -288,7 +278,7 @@ async def gifts_summary(message: Message, db: Database, config: Config) -> None:
         blocks.append("\n".join(lines))
 
     await message.answer(
-        f"{e('dot')} <b>В работе</b>\n{RULE}\n" + "\n\n".join(blocks)
+        f"{e('dot')} <b>В работе</b>\n\n" + "\n\n".join(blocks)
     )
 
 
@@ -303,7 +293,7 @@ async def stats_command(message: Message, db: Database, config: Config) -> None:
 async def my_id(message: Message) -> None:
     await message.answer(
         f"{e('id')} <b>Твой Telegram ID</b>\n"
-        f"{RULE}\n<code>{message.from_user.id}</code>"
+        f"<code>{message.from_user.id}</code>"
     )
 
 
@@ -311,7 +301,6 @@ async def my_id(message: Message) -> None:
 async def help_command(message: Message, config: Config) -> None:
     text = (
         f"{e('logo')} <b>Как пользоваться</b>\n"
-        f"{RULE}\n"
         f"{e('wallet')} Укажи TON-кошелёк в разделе «Кошелёк»\n"
         f"{e('balance')} Дождись начисления баланса\n"
         f"{e('withdraw')} Нажми «Вывести средства»\n\n"
@@ -321,7 +310,6 @@ async def help_command(message: Message, config: Config) -> None:
     if message.from_user.id in config.admin_ids:
         text += (
             f"\n\n{e('admin')} <b>Команды администратора</b>\n"
-            f"{RULE}\n"
             f"<code>/credit ID СУММА [коммент]</code>\n"
             f"<code>/resolve НОМЕР sent|refund</code>\n"
             f"<code>/stats</code>"
@@ -339,7 +327,6 @@ async def _stats_text(db: Database, config: Config) -> str:
     stuck = await db.find_stuck_withdrawals()
     text = (
         f"{e('stats')} <b>Статистика</b>\n"
-        f"{RULE}\n"
         f"{e('users')} Работников · <b>{data['workers']}</b>\n"
         f"{e('balance')} К выплате · <b>{fmt_ton(data['total_balance_nano'])}</b>\n"
         f"{e('check')} Выплат проведено · <b>{data['paid_count']}</b>\n"
@@ -366,7 +353,6 @@ async def admin_panel(call: CallbackQuery, config: Config) -> None:
     await safe_edit(
         call,
         f"{e('admin')} <b>Панель администратора</b>\n"
-        f"{RULE}\n"
         f"{e('dot')} Режим выплат · <b>{mode}</b>\n\n"
         f"<code>/credit ID СУММА [коммент]</code>\n"
         f"<code>/resolve НОМЕР sent|refund</code>\n"
@@ -405,7 +391,7 @@ async def resolve_claim(call: CallbackQuery, db: Database, config: Config) -> No
         await safe_edit(
             call,
             f"{e('warn')} <b>Заявка уже закрыта</b>\n"
-            f"{RULE}\n{e('dot')} Её обработали раньше.",
+            f"{e('dot')} Её обработали раньше.",
         )
         await call.answer()
         return
@@ -425,7 +411,6 @@ async def resolve_claim(call: CallbackQuery, db: Database, config: Config) -> No
     await safe_edit(
         call,
         f"{e(icon_key)} <b>{head}</b>\n"
-        f"{RULE}\n"
         f"{e('gift')} {esc(title)}\n"
         f"{e('profile')} Воркер · <code>{worker_id}</code>\n"
         f"{e('next')} Передавал с · {esc(request.get('sender_username') or '—')}",
@@ -434,12 +419,10 @@ async def resolve_claim(call: CallbackQuery, db: Database, config: Config) -> No
 
     worker_text = (
         f"{e('check')} <b>Подарок закреплён за тобой</b>\n"
-        f"{RULE}\n"
         f"{e('gift')} {esc(title)}\n\n"
         f"{e('star')} После продажи получишь {config.worker_share_percent}% на баланс."
         if approved else
         f"{e('cross')} <b>Заявка отклонена</b>\n"
-        f"{RULE}\n"
         f"{e('gift')} {esc(title)}\n\n"
         f"{e('dot')} Если это твой подарок — напиши администратору."
     )
@@ -509,7 +492,6 @@ async def sync_gifts(
 
     await message.answer(
         f"{e('check')} <b>Синхронизация завершена</b>\n"
-        f"{RULE}\n"
         f"{e('gift')} Всего на аккаунте · <b>{len(existing)}</b>\n"
         f"{e('dot')} Новых · <b>{summary.get('registered', 0)}</b>\n"
         f"{e('warn')} Без отправителя · <b>{summary.get('unattributed', 0)}</b>\n"
@@ -548,7 +530,6 @@ async def pay_now(call: CallbackQuery, db: Database, config: Config, payer) -> N
         await safe_edit(
             call,
             f"{e('check')} <b>Выплачено</b>\n"
-            f"{RULE}\n"
             f"{e('profile')} Воркер · <code>{worker_id}</code>\n"
             f"{e('coin')} <b>{fmt_ton(result.amount_nano)}</b>\n"
             f"{e('link')} <code>{esc(result.tx_hash)}</code>",
@@ -556,7 +537,6 @@ async def pay_now(call: CallbackQuery, db: Database, config: Config, payer) -> N
         await _notify(
             call, worker_id,
             f"{e('check')} <b>Выплата отправлена</b>\n"
-            f"{RULE}\n"
             f"{e('coin')} <b>{fmt_ton(result.amount_nano)}</b>\n"
             f"{e('link')} <code>{esc(result.tx_hash)}</code>",
         )
@@ -571,7 +551,6 @@ async def pay_now(call: CallbackQuery, db: Database, config: Config, payer) -> N
     await safe_edit(
         call,
         f"{e('cross')} <b>Выплата не выполнена</b>\n"
-        f"{RULE}\n"
         f"{e('profile')} Воркер · <code>{worker_id}</code>\n"
         f"{e('dot')} {reasons.get(result.status, result.status)}",
     )
