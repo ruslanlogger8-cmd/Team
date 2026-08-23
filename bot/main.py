@@ -145,13 +145,13 @@ async def _start_gifts(
     try:
         existing = await watcher.list_saved_gifts()
         summary = await service.sync_existing(existing)
-        if summary.get("registered") or summary.get("unattributed"):
-            logger.info(
-                "Синхронизация: новых %s, без отправителя %s, уже было %s",
-                summary.get("registered", 0),
-                summary.get("unattributed", 0),
-                summary.get("duplicate", 0),
-            )
+        # Печатаем всегда: молчание не отличить от «ничего не нашлось».
+        logger.info(
+            "Синхронизация: новых %s, без отправителя %s, уже было %s",
+            summary.get("registered", 0),
+            summary.get("unattributed", 0),
+            summary.get("duplicate", 0),
+        )
     except Exception as exc:  # noqa: BLE001 — не критично для запуска
         logger.warning("Синхронизация подарков не удалась: %s", exc)
 
