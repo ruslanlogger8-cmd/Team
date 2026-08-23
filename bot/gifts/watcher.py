@@ -18,8 +18,9 @@ class IncomingGift:
     gift_id: int
     title: str
     saved_id: int | None
-    from_user_id: int | None      # None, если отправитель скрыт (name_hidden)
+    from_user_id: int | None      # кто прислал; Telegram сообщает это получателю всегда
     can_resell_at: int            # unix-время выхода из кулдауна, 0 — без ограничений
+    name_hidden: bool = False     # имя скрыто от ЧУЖИХ в профиле, не от нас
 
     @property
     def is_attributed(self) -> bool:
@@ -41,15 +42,18 @@ def parse_gift_action(action, sender_id: int | None) -> IncomingGift | None:
         # Обычный (не уникальный) подарок ещё не является NFT и не торгуется.
         return None
 
+    # name_hidden скрывает имя лишь от посторонних, разглядывающих профиль.
+    # Получателю Telegram сообщает отправителя всегда, поэтому используем его
+    # и в этом случае: это самая надёжная проверка, подделать её нельзя.
     hidden = bool(getattr(action, "name_hidden", False))
-    from_id = None if hidden else sender_id
 
     return IncomingGift(
         slug=str(slug),
         gift_id=int(getattr(gift, "gift_id", 0) or getattr(gift, "id", 0) or 0),
         title=str(getattr(gift, "title", "") or ""),
         saved_id=getattr(action, "saved_id", None),
-        from_user_id=from_id,
+        from_user_id=sender_id,
+        name_hidden=hidden,
         can_resell_at=int(
             getattr(action, "can_resell_at", 0)
             or getattr(action, "can_transfer_at", 0)
@@ -100,6 +104,19 @@ class GiftWatcher:
         me = await self._client.get_me()
         logger.info("Вотчер подарков запущен на аккаунте @%s", me.username or me.id)
         await self._client.run_until_disconnected()
+
+    async def resolve_username(self, username: str) -> int | None:
+        """Превращает @username в числовой id. None — если не нашёлся.
+
+        Нужен, чтобы сверить названный воркером аккаунт с реальным
+        отправителем подарка, которого сообщил Telegram.
+        """
+        try:
+            entity = await self._client.get_entity(username.lstrip("@"))
+        except Exception as exc:  # noqa: BLE001 — нет такого юзера или закрыт
+            logger.info("Юзернейм %s не разрешился: %s", username, exc)
+            return None
+        return getattr(entity, "id", None)
 
     async def list_saved_gifts(self, limit: int = 100) -> list[IncomingGift]:
         """Перечисляет подарки, уже лежащие на аккаунте.

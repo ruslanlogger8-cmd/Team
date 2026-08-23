@@ -51,6 +51,7 @@ def parse_username(text: str) -> str | None:
 
 class ClaimResult(str, Enum):
     ATTACHED = "attached"            # привязали сразу
+    VERIFIED = "verified"            # сверено с данными Telegram, привязано
     PENDING = "pending"              # ушло админу на подтверждение
     DUPLICATE = "duplicate"          # на этот подарок уже есть заявка
     ALREADY_YOURS = "already_yours"  # уже был за ним
@@ -70,7 +71,8 @@ class Claim:
     @property
     def ok(self) -> bool:
         return self.result in (
-            ClaimResult.ATTACHED, ClaimResult.ALREADY_YOURS, ClaimResult.PENDING
+            ClaimResult.ATTACHED, ClaimResult.VERIFIED,
+            ClaimResult.ALREADY_YOURS, ClaimResult.PENDING,
         )
 
 
@@ -81,6 +83,7 @@ async def submit_claim(
     needs_approval: bool = True,
     sender_username: str = "",
     photo_id: str = "",
+    resolve_username=None,
 ) -> Claim:
     """Разбирает ссылку и оформляет притязание воркера на подарок.
 
@@ -106,6 +109,25 @@ async def submit_claim(
     if owner is not None:
         # Подарок уже закреплён за другим — молча переписывать нельзя,
         # иначе выплату получит не тот, кто прислал.
+        return Claim(ClaimResult.TAKEN, slug, title, status)
+
+    # Глубокая проверка: Telegram сообщает получателю, кто прислал подарок,
+    # даже когда имя скрыто от посторонних. Сверяем это с заявителем — такое
+    # подтверждение надёжнее любого скриншота и не требует человека.
+    real_sender = gift["sender_id"]
+    if real_sender is not None:
+        if real_sender == worker_id:
+            await db.claim_gift_if_free(slug, worker_id)
+            return Claim(ClaimResult.VERIFIED, slug, title, status)
+
+        if sender_username and resolve_username is not None:
+            resolved = await resolve_username(sender_username)
+            if resolved == real_sender:
+                # Воркер отправлял с другого своего аккаунта и честно его назвал.
+                await db.claim_gift_if_free(slug, worker_id)
+                return Claim(ClaimResult.VERIFIED, slug, title, status)
+
+        # Отправитель известен и это не заявитель — заявка ложная.
         return Claim(ClaimResult.TAKEN, slug, title, status)
 
     if not needs_approval:

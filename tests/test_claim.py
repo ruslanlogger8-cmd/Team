@@ -214,3 +214,70 @@ class TestUsername:
     def test_rejected(self, bad):
         from bot.gifts.claim import parse_username
         assert parse_username(bad) is None
+
+
+@pytest.mark.asyncio
+class TestAutoVerification:
+    """Telegram сообщает получателю отправителя — сверяем заявку с ним."""
+
+    async def test_sender_matches_claimer_auto_approved(self, db):
+        await _worker(db, 1)
+        await _incoming(db, sender=1)
+        # подарок уже привязан автоматически
+        assert (await db.get_gift("PlushPepe-42"))["worker_id"] == 1
+        claim = await submit_claim(db, 1, "PlushPepe-42")
+        assert claim.result is ClaimResult.ALREADY_YOURS
+
+    async def test_other_account_verified_by_username(self, db):
+        """Воркер отправлял со второго своего аккаунта и честно его назвал."""
+        await _worker(db, 1)
+        await _incoming(db, sender=555)          # 555 не заводил бота
+        assert (await db.get_gift("PlushPepe-42"))["worker_id"] is None
+
+        async def resolve(username):
+            return 555 if username == "@my_second" else None
+
+        claim = await submit_claim(
+            db, 1, "PlushPepe-42",
+            sender_username="@my_second", resolve_username=resolve,
+        )
+        assert claim.result is ClaimResult.VERIFIED
+        assert (await db.get_gift("PlushPepe-42"))["worker_id"] == 1
+
+    async def test_wrong_username_rejected(self, db):
+        """Назвал чужой аккаунт — Telegram говорит иное, заявка ложная."""
+        await _worker(db, 1)
+        await _incoming(db, sender=555)
+
+        async def resolve(username):
+            return 999
+
+        claim = await submit_claim(
+            db, 1, "PlushPepe-42",
+            sender_username="@not_mine", resolve_username=resolve,
+        )
+        assert claim.result is ClaimResult.TAKEN
+        assert (await db.get_gift("PlushPepe-42"))["worker_id"] is None
+
+    async def test_claiming_someone_elses_gift_rejected(self, db):
+        """Чужой подарок не заберёшь, даже с красивым скриншотом."""
+        await _worker(db, 1)
+        await _worker(db, 2)
+        await _incoming(db, sender=2)
+
+        async def resolve(username):
+            return 1
+
+        claim = await submit_claim(
+            db, 1, "PlushPepe-42",
+            sender_username="@me", resolve_username=resolve, photo_id="fake",
+        )
+        assert claim.result is ClaimResult.TAKEN
+        assert (await db.get_gift("PlushPepe-42"))["worker_id"] == 2
+
+    async def test_unknown_sender_still_goes_to_admin(self, db):
+        """Отправителя нет в данных — только тогда нужен человек."""
+        await _worker(db, 1)
+        await _incoming(db, sender=None)
+        claim = await submit_claim(db, 1, "PlushPepe-42", sender_username="@ivan")
+        assert claim.result is ClaimResult.PENDING

@@ -602,7 +602,10 @@ async def claim_username(message: Message, state: FSMContext) -> None:
 
 
 @router.message(ClaimForm.waiting_photo, F.photo)
-async def claim_photo(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+async def claim_photo(
+    message: Message, state: FSMContext, db: Database, config: Config,
+    gift_watcher=None,
+) -> None:
     data = await state.get_data()
     photo_id = message.photo[-1].file_id
 
@@ -613,6 +616,9 @@ async def claim_photo(message: Message, state: FSMContext, db: Database, config:
         config.claim_needs_approval,
         sender_username=data.get("sender_username", ""),
         photo_id=photo_id,
+        resolve_username=(
+            gift_watcher.resolve_username if gift_watcher is not None else None
+        ),
     )
     await state.clear()
     keyboard = main_menu(is_admin=message.from_user.id in config.admin_ids)
@@ -628,7 +634,26 @@ async def claim_photo(message: Message, state: FSMContext, db: Database, config:
 
     if claim.result is ClaimResult.TAKEN:
         await message.answer(
-            f"{e('warn')} <b>Подарок уже закреплён за другим</b>",
+            f"{e('cross')} <b>Заявка отклонена</b>\n"
+            f"{RULE}\n"
+            f"{e('shield')} Telegram сообщает, что этот подарок прислал "
+            f"другой аккаунт — не тот, что ты указал.\n\n"
+            f"{e('dot')} Проверь юзернейм, с которого передавал.\n"
+            f"{e('dot')} Если подарок не твой — заявка не пройдёт.",
+            reply_markup=keyboard,
+        )
+        return
+
+    if claim.result is ClaimResult.VERIFIED:
+        icon_key, label = GIFT_STATUS.get(claim.status, ("dot", claim.status))
+        await message.answer(
+            f"{e('check')} <b>Проверено и закреплено</b>\n"
+            f"{RULE}\n"
+            f"{e('gift')} {esc(claim.title)}\n"
+            f"{e(icon_key)} Статус · {label}\n\n"
+            f"{e('shield')} Отправитель сверен с данными Telegram — "
+            f"подтверждение администратора не нужно.\n"
+            f"{e('star')} После продажи получишь <b>{config.worker_share_percent}%</b>.",
             reply_markup=keyboard,
         )
         return

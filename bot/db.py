@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS gifts (
     gift_id        INTEGER,
     title          TEXT,
     saved_id       INTEGER,
-    worker_id      INTEGER,                 -- NULL, если отправитель скрыт
+    worker_id      INTEGER,                 -- кому платим; NULL пока не опознан
+    sender_id      INTEGER,                 -- кто реально прислал, по данным Telegram
     status         TEXT NOT NULL,           -- received | deposited | listed | sold | paid | skipped
     can_resell_at  INTEGER NOT NULL DEFAULT 0,
     list_price_nano INTEGER NOT NULL DEFAULT 0,
@@ -136,6 +137,12 @@ class Database:
         CREATE TABLE IF NOT EXISTS не меняет существующую таблицу, поэтому у
         баз, созданных ранее, новых полей не будет — добавляем их вручную.
         """
+        cur = await self._conn.execute("PRAGMA table_info(gifts)")
+        gift_columns = {row["name"] for row in await cur.fetchall()}
+        if gift_columns and "sender_id" not in gift_columns:
+            await self._conn.execute("ALTER TABLE gifts ADD COLUMN sender_id INTEGER")
+            logger.info("Схема: добавлена колонка gifts.sender_id")
+
         cur = await self._conn.execute("PRAGMA table_info(claim_requests)")
         existing = {row["name"] for row in await cur.fetchall()}
         for column, ddl in (
@@ -290,6 +297,7 @@ class Database:
         saved_id: int | None,
         worker_id: int | None,
         can_resell_at: int,
+        sender_id: int | None = None,
     ) -> int | None:
         """Регистрирует поступивший подарок. None — если такой slug уже был.
 
@@ -301,9 +309,12 @@ class Database:
             if await cur.fetchone():
                 return None
             cur = await self.conn.execute(
-                "INSERT INTO gifts (slug, gift_id, title, saved_id, worker_id, status, "
-                "can_resell_at, received_at) VALUES (?,?,?,?,?,'received',?,?)",
-                (slug, gift_id, title, saved_id, worker_id, can_resell_at, int(time.time())),
+                "INSERT INTO gifts (slug, gift_id, title, saved_id, worker_id, sender_id, "
+                "status, can_resell_at, received_at) VALUES (?,?,?,?,?,?,'received',?,?)",
+                (
+                    slug, gift_id, title, saved_id, worker_id, sender_id,
+                    can_resell_at, int(time.time()),
+                ),
             )
             await self.conn.commit()
             return cur.lastrowid

@@ -49,7 +49,10 @@ class GiftService:
     async def register(self, gift: IncomingGift) -> str:
         """Записывает поступивший подарок. Повторный slug отбрасывается —
         иначе за один подарок заплатили бы дважды."""
-        worker_id = gift.from_user_id
+        # Отправителя запоминаем всегда, даже если он не заводил аккаунт в боте:
+        # по нему потом автоматически проверяется заявка.
+        sender_id = gift.from_user_id
+        worker_id = sender_id
         if worker_id is not None and await self._db.get_worker(worker_id) is None:
             worker_id = None
 
@@ -60,6 +63,7 @@ class GiftService:
             saved_id=gift.saved_id,
             worker_id=worker_id,
             can_resell_at=gift.can_resell_at,
+            sender_id=sender_id,
         )
         if row_id is None:
             return "duplicate"

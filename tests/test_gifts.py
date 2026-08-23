@@ -155,10 +155,11 @@ class TestParsing:
         assert result.slug == "plush-42" and result.from_user_id == 111
         assert result.is_attributed
 
-    async def test_hidden_sender_is_unattributed(self):
-        """Скрытого отправителя привязать не к кому — платить наугад нельзя."""
+    async def test_hidden_name_still_reveals_sender(self):
+        """name_hidden прячет имя от чужих в профиле, но не от получателя."""
         result = parse_gift_action(self._action("x-1", hidden=True), 111)
-        assert result.from_user_id is None and not result.is_attributed
+        assert result.from_user_id == 111 and result.is_attributed
+        assert result.name_hidden is True
 
     async def test_cooldown_carried_over(self):
         assert parse_gift_action(self._action("y-2", cooldown=1893456000), 1).can_resell_at == 1893456000
