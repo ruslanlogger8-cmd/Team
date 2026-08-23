@@ -39,6 +39,7 @@ class Config:
     dry_run: bool
     use_premium_emoji: bool
     auto_payout: bool
+    menu_photo: str
     payout_comment: str = field(default="payout")
 
     @staticmethod
@@ -82,5 +83,6 @@ class Config:
             dry_run=dry_run,
             use_premium_emoji=os.environ.get("USE_PREMIUM_EMOJI", "true").lower() in ("1", "true", "yes"),
             auto_payout=os.environ.get("AUTO_PAYOUT", "false").lower() in ("1", "true", "yes"),
+            menu_photo=os.environ.get("MENU_PHOTO", "").strip(),
             payout_comment=os.environ.get("PAYOUT_COMMENT", "payout").strip() or "payout",
         )
