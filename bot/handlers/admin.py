@@ -9,6 +9,7 @@ from ..config import Config
 from ..db import Database
 from ..emoji import e, esc
 from ..keyboards import admin_menu, back_menu
+from ..payout import execute_payout
 from ..ui import safe_edit
 from ..utils import fmt_ton, parse_ton
 
@@ -20,7 +21,7 @@ def _is_admin(user_id: int, config: Config) -> bool:
 
 
 @router.message(Command("credit"))
-async def credit(message: Message, db: Database, config: Config) -> None:
+async def credit(message: Message, db: Database, config: Config, payer) -> None:
     """/credit <user_id> <amount_ton> [комментарий] — начислить баланс."""
     if not _is_admin(message.from_user.id, config):
         return
@@ -65,14 +66,53 @@ async def credit(message: Message, db: Database, config: Config) -> None:
         f"{e('check')} {sign}{fmt_ton(amount_nano)} работнику <code>{target_id}</code>\n"
         f"{e('money')} Новый баланс: <b>{fmt_ton(new_balance)}</b>"
     )
+    await _notify_worker(
+        message, target_id,
+        f"{e('money')} Начислено <b>{sign}{fmt_ton(amount_nano)}</b>\n"
+        f"Баланс: <b>{fmt_ton(new_balance)}</b>",
+    )
+
+    if config.auto_payout and amount_nano > 0:
+        await _auto_payout(message, db, config, payer, target_id)
+
+
+async def _notify_worker(message: Message, user_id: int, text: str) -> bool:
     try:
-        await message.bot.send_message(
-            target_id,
-            f"{e('money')} Начислено <b>{sign}{fmt_ton(amount_nano)}</b>\n"
-            f"Баланс: <b>{fmt_ton(new_balance)}</b>",
-        )
+        await message.bot.send_message(user_id, text)
+        return True
     except Exception:  # noqa: BLE001 — работник мог заблокировать бота
-        await message.answer(f"{e('warn')} Начислено, но уведомить работника не удалось.")
+        return False
+
+
+async def _auto_payout(message: Message, db: Database, config: Config, payer, user_id: int) -> None:
+    """Отправляет баланс сразу после начисления, без нажатия работником."""
+    result = await execute_payout(db, payer, user_id, config.min_withdraw_nano)
+
+    if result.status == "skipped":
+        worker = await db.get_worker(user_id)
+        reason = "кошелёк не задан" if worker and not worker.wallet else (
+            f"баланс ниже минимума {fmt_ton(config.min_withdraw_nano)}"
+        )
+        await message.answer(f"{e('time')} Автовыплата отложена: {reason}.")
+        return
+
+    if result.status == "failed":
+        await message.answer(
+            f"{e('cross')} Автовыплата #{result.withdrawal_id} не прошла: {esc(result.error)}\n"
+            f"Средства возвращены на баланс."
+        )
+        return
+
+    demo = " (DRY_RUN)" if config.dry_run else ""
+    await message.answer(
+        f"{e('send')} Автовыплата{demo}: <b>{fmt_ton(result.amount_nano)}</b>\n"
+        f"TX: <code>{esc(result.tx_hash)}</code>"
+    )
+    await _notify_worker(
+        message, user_id,
+        f"{e('send')} <b>Выплачено {fmt_ton(result.amount_nano)}</b>\n"
+        f"TX: <code>{esc(result.tx_hash)}</code>{demo}",
+    )
 
 
 @router.message(Command("resolve"))

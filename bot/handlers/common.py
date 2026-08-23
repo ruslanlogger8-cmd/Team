@@ -1,9 +1,7 @@
 """Хендлеры работника: меню, профиль, кошелёк, топ, история, вывод."""
 from __future__ import annotations
 
-import asyncio
 import logging
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from aiogram import F, Router
@@ -16,6 +14,7 @@ from ..db import Database
 from ..emoji import e, esc
 from ..keyboards import back_menu, confirm_withdraw, history_nav, main_menu
 from ..states import WalletForm
+from ..payout import execute_payout
 from ..ui import reset_state, safe_edit
 from ..utils import fmt_ton, is_valid_ton_address
 
@@ -24,21 +23,6 @@ router = Router()
 
 PER_PAGE = 5
 _STATUS = {"paid": "✅ выплачено", "processing": "⏳ в обработке", "failed": "❌ ошибка"}
-
-# Страховка поверх БД-резерва: один активный вывод на пользователя в процессе.
-# Словарь чистится после освобождения, иначе растёт на каждого пользователя навсегда.
-_user_locks: dict[int, asyncio.Lock] = {}
-
-
-@asynccontextmanager
-async def _withdraw_lock(user_id: int):
-    lock = _user_locks.setdefault(user_id, asyncio.Lock())
-    try:
-        async with lock:
-            yield
-    finally:
-        if not lock.locked() and not _user_locks.get(user_id, lock)._waiters:
-            _user_locks.pop(user_id, None)
 
 
 def _dt(ts: int) -> str:
@@ -234,49 +218,47 @@ async def withdraw_cancel(call: CallbackQuery, config: Config) -> None:
 
 @router.callback_query(F.data == "wd:yes")
 async def withdraw_confirm(call: CallbackQuery, db: Database, config: Config, payer) -> None:
-    user_id = call.from_user.id
     await call.answer()
+    await safe_edit(call, f"{e('time')} Отправляю...")
 
-    async with _withdraw_lock(user_id):
-        reserved = await db.reserve_withdrawal(user_id, config.min_withdraw_nano)
-        if reserved is None:
-            await safe_edit(
-                call,
-                f"{e('cross')} Заявку создать не удалось: недостаточный баланс, "
-                f"нет кошелька или предыдущий вывод ещё в обработке.",
-                reply_markup=back_menu(),
-            )
-            return
+    result = await execute_payout(db, payer, call.from_user.id, config.min_withdraw_nano)
 
-        withdrawal_id, wallet, amount_nano = reserved
-        await safe_edit(call, f"{e('time')} Отправляю {fmt_ton(amount_nano)}...")
-
-        try:
-            tx_hash = await payer.send(wallet, amount_nano)
-        except Exception as exc:  # noqa: BLE001 — любая ошибка => возврат средств
-            logger.exception("Выплата #%s провалилась", withdrawal_id)
-            await db.mark_failed_and_refund(withdrawal_id, user_id, amount_nano, repr(exc))
-            await safe_edit(
-                call,
-                f"{e('cross')} Отправить не удалось. Средства возвращены на баланс.",
-                reply_markup=back_menu(),
-            )
-            for admin_id in config.admin_ids:
-                try:
-                    await call.bot.send_message(
-                        admin_id,
-                        f"{e('warn')} Выплата #{withdrawal_id} провалена "
-                        f"({fmt_ton(amount_nano)}, user {user_id}): {esc(exc)}",
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-            return
-
-        await db.mark_paid(withdrawal_id, tx_hash)
-        demo = f"\n\n{e('warn')} DRY_RUN: реальные TON не отправлены" if config.dry_run else ""
+    if result.status == "skipped":
         await safe_edit(
             call,
-            f"{e('check')} <b>Отправлено {fmt_ton(amount_nano)}</b>\n\n"
-            f"TX: <code>{esc(tx_hash)}</code>{demo}",
-            reply_markup=back_menu(),
+            f"{e('cross')} Выплачивать нечего: недостаточный баланс, нет кошелька "
+            f"или предыдущая заявка ещё в обработке.",
+            back_menu(),
         )
+        return
+
+    if result.status == "failed":
+        await safe_edit(
+            call,
+            f"{e('cross')} Отправить не удалось. Средства возвращены на баланс.",
+            back_menu(),
+        )
+        await _alert_admins(call.bot, config, result, call.from_user.id)
+        return
+
+    demo = f"\n\n{e('warn')} DRY_RUN: реальные TON не отправлены" if config.dry_run else ""
+    await safe_edit(
+        call,
+        f"{e('check')} <b>Отправлено {fmt_ton(result.amount_nano)}</b>\n\n"
+        f"TX: <code>{esc(result.tx_hash)}</code>{demo}",
+        back_menu(),
+    )
+
+
+async def _alert_admins(bot, config: Config, result, user_id: int) -> None:
+    """Сообщает админам о провалившейся выплате."""
+    text = (
+        f"{e('warn')} Выплата #{result.withdrawal_id} провалена\n"
+        f"{fmt_ton(result.amount_nano)}, работник <code>{user_id}</code>\n"
+        f"Причина: {esc(result.error)}"
+    )
+    for admin_id in config.admin_ids:
+        try:
+            await bot.send_message(admin_id, text)
+        except Exception:  # noqa: BLE001 — админ мог не запускать бота
+            logger.warning("Не удалось уведомить админа %s", admin_id)
