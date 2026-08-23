@@ -37,9 +37,18 @@ python -m bot.main
 ## Деплой на Railway
 
 1. Push в GitHub.
-2. Railway → New Project → Deploy from GitHub Repo.
-3. Variables → добавить всё из `.env.example` (`BOT_TOKEN`, `ADMIN_IDS`, `WALLET_MNEMONIC`, ...).
-4. Deploy. Процесс `worker` из `Procfile` стартует автоматически.
+2. Railway → New Project → Deploy from GitHub Repo → выбрать репозиторий и ветку.
+3. **Volume (обязательно).** Settings → Volumes → Add Volume, mount path `/data`.
+   Затем в Variables поставить `DB_PATH=/data/payouts.db`.
+   Без этого файловая система эфемерная: база стирается при каждом редеплое,
+   балансы и история выплат обнуляются.
+4. Variables → добавить остальное из `.env.example`
+   (`BOT_TOKEN`, `ADMIN_IDS`, `WALLET_MNEMONIC`, `WALLET_VERSION`, ...).
+5. Deploy. Процесс стартует по `railway.json` / `Procfile`.
+6. В логах при старте печатается адрес горячего кошелька — сверь, что это твой.
+
+Порядок первого запуска: `TON_TESTNET=true` → проверить вывод на тестовой сети →
+переключить на mainnet и пополнить горячий кошелёк.
 
 ## Env
 
