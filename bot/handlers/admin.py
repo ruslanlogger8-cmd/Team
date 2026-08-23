@@ -1,6 +1,8 @@
 """Экраны администратора: начисление, статистика, разбор зависших заявок."""
 from __future__ import annotations
 
+import time
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
@@ -211,7 +213,7 @@ async def attach_gift(message: Message, db: Database, config: Config) -> None:
 
 @router.message(Command("gifts"))
 async def gifts_summary(message: Message, db: Database, config: Config) -> None:
-    """/gifts — сводка по подаркам."""
+    """/gifts — сводка и состояние каждого подарка."""
     if not _is_admin(message.from_user.id, config):
         return
     if not config.gifts_enabled:
@@ -222,21 +224,60 @@ async def gifts_summary(message: Message, db: Database, config: Config) -> None:
         return
 
     stats = await db.gift_stats()
-    pending = [row for row in await db.gifts_by_status("received") if row["worker_id"] is None]
     text = (
         f"{e('gift')} <b>Подарки</b>\n"
         f"{RULE}\n"
         f"{e('dot')} Принято · <b>{stats['received']}</b>\n"
+        f"{e('next')} Передано на маркет · <b>{stats.get('deposited', 0)}</b>\n"
         f"{e('up')} Выставлено · <b>{stats['listed']}</b>\n"
         f"{e('check')} Продано · <b>{stats['sold']}</b>\n"
         f"{e('coin')} Оборот · <b>{fmt_ton(stats['revenue_nano'])}</b>\n\n"
         f"{e('star')} Доля воркера · <b>{config.worker_share_percent}%</b>"
     )
-    if pending:
-        text += f"\n\n{e('warn')} Без привязки · <b>{len(pending)}</b> — разбери через /gift"
     if stats["skipped"]:
         text += f"\n{e('cross')} Пропущено · <b>{stats['skipped']}</b>"
     await message.answer(text)
+
+    # Детали по тем, что ещё не проданы — видно, что именно их держит.
+    waiting = []
+    for status in ("received", "deposited", "listed"):
+        waiting.extend(await db.gifts_by_status(status))
+    if not waiting:
+        return
+
+    now = int(time.time())
+    blocks = []
+    for row in waiting[:15]:
+        title = row["title"] or row["slug"]
+        lines = [f"{e('gift')} <b>{esc(title)}</b>", f"<code>{esc(row['slug'])}</code>"]
+
+        if row["worker_id"]:
+            lines.append(f"{e('profile')} Воркер · <code>{row['worker_id']}</code>")
+        else:
+            sender = row["sender_id"]
+            lines.append(
+                f"{e('warn')} Не привязан"
+                + (f" · прислал <code>{sender}</code>" if sender else " · отправитель неизвестен")
+            )
+
+        left = row["can_resell_at"] - now
+        if left > 0:
+            days, rest = divmod(left, 86400)
+            hours = rest // 3600
+            when = f"{days} д {hours} ч" if days else f"{hours} ч"
+            lines.append(f"{e('time')} Кулдаун ещё {when}")
+        elif row["status"] == "received":
+            lines.append(f"{e('check')} Готов к передаче на маркет")
+        elif row["status"] == "deposited":
+            lines.append(f"{e('next')} Передан, ждёт появления в инвентаре")
+        elif row["status"] == "listed":
+            lines.append(f"{e('up')} Выставлен за {fmt_ton(row['list_price_nano'])}")
+
+        blocks.append("\n".join(lines))
+
+    await message.answer(
+        f"{e('dot')} <b>В работе</b>\n{RULE}\n" + f"\n\n{RULE}\n".join(blocks)
+    )
 
 
 @router.message(Command("stats"))
