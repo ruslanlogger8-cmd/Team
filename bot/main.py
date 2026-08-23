@@ -66,6 +66,53 @@ async def _report_stuck(bot: Bot, db: Database, config: Config) -> None:
             logger.warning("Не удалось уведомить админа %s о зависших заявках", admin_id)
 
 
+async def _start_gifts(db: Database, config: Config, bot: Bot) -> list[asyncio.Task]:
+    """Поднимает подсистему подарков, если она включена.
+
+    Сбой здесь не должен ронять выплатной бот: он самодостаточен и работает
+    без подарков.
+    """
+    if not config.gifts_enabled:
+        logger.info("Подсистема подарков выключена (GIFTS_ENABLED=false)")
+        return []
+
+    try:
+        from .gifts.market import Market
+        from .gifts.poller import run_poller
+        from .gifts.service import GiftService
+        from .gifts.watcher import GiftWatcher
+    except ImportError as exc:
+        logger.error("Подарки не запущены, нет зависимостей: %s", exc)
+        return []
+
+    market = Market(config.tg_api_id, config.tg_api_hash, session_name="mrkt")
+    await market.__aenter__()
+    service = GiftService(db, config, market)
+
+    watcher = GiftWatcher(config.tg_api_id, config.tg_api_hash, config.tg_session)
+
+    async def on_gift(gift) -> None:
+        outcome = await service.register(gift)
+        logger.info("Подарок %s: %s", gift.slug, outcome)
+        if outcome == "unattributed":
+            for admin_id in config.admin_ids:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"Подарок <code>{gift.slug}</code> пришёл без опознания отправителя.\n"
+                        f"Привяжи вручную: <code>/gift {gift.slug} ID_воркера</code>",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+    tasks = [
+        asyncio.create_task(watcher.start(on_gift), name="gift-watcher"),
+        asyncio.create_task(run_poller(service, config, bot), name="gift-poller"),
+    ]
+    logger.info("Подсистема подарков запущена: доля воркера %s%%", config.worker_share_percent)
+    return tasks
+
+
 async def main() -> None:
     config = Config.load()
     configure_emoji(config.use_premium_emoji)
@@ -93,10 +140,16 @@ async def main() -> None:
         await _set_commands(bot)
         await _report_stuck(bot, db, config)
 
+        background = await _start_gifts(db, config, bot)
+
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("Бот запущен, ожидаю сообщения")
         await dp.start_polling(bot)
     finally:
+        for task in background:
+            task.cancel()
+        if background:
+            await asyncio.gather(*background, return_exceptions=True)
         await db.close()
         if bot is not None:
             await bot.session.close()

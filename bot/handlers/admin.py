@@ -165,6 +165,80 @@ async def resolve(message: Message, db: Database, config: Config) -> None:
     await message.answer(f"{e('check')} Заявка №{withdrawal_id} {outcome}.")
 
 
+@router.message(Command("gift"))
+async def attach_gift(message: Message, db: Database, config: Config) -> None:
+    """/gift <slug> <id_воркера> — привязать подарок со скрытым отправителем."""
+    if not _is_admin(message.from_user.id, config):
+        return
+
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 3:
+        pending = [
+            row for row in await db.gifts_by_status("received") if row["worker_id"] is None
+        ]
+        listing = "\n".join(
+            f"{e('dot')} <code>{esc(row['slug'])}</code> · {esc(row['title'] or '—')}"
+            for row in pending[:15]
+        ) or f"{e('check')} Непривязанных подарков нет."
+        await message.answer(
+            f"{e('warn')} <b>Формат команды</b>\n"
+            f"{RULE}\n"
+            f"<code>/gift SLUG ID_воркера</code>\n\n"
+            f"{e('gift')} <b>Ждут привязки</b>\n{listing}"
+        )
+        return
+
+    slug = parts[1].strip()
+    try:
+        worker_id = int(parts[2].split()[0])
+    except ValueError:
+        await message.answer(f"{e('cross')} ID воркера должен быть числом.")
+        return
+
+    if await db.get_gift(slug) is None:
+        await message.answer(f"{e('cross')} Подарок <code>{esc(slug)}</code> не найден.")
+        return
+    if await db.get_worker(worker_id) is None:
+        await message.answer(f"{e('cross')} Воркер <code>{worker_id}</code> не нажимал /start.")
+        return
+
+    await db.attach_gift_worker(slug, worker_id)
+    await message.answer(
+        f"{e('check')} Подарок <code>{esc(slug)}</code> привязан к воркеру "
+        f"<code>{worker_id}</code> — уйдёт в продажу на ближайшем круге."
+    )
+
+
+@router.message(Command("gifts"))
+async def gifts_summary(message: Message, db: Database, config: Config) -> None:
+    """/gifts — сводка по подаркам."""
+    if not _is_admin(message.from_user.id, config):
+        return
+    if not config.gifts_enabled:
+        await message.answer(
+            f"{e('warn')} Подсистема подарков выключена.\n"
+            f"{e('dot')} Включается переменной <code>GIFTS_ENABLED=true</code>"
+        )
+        return
+
+    stats = await db.gift_stats()
+    pending = [row for row in await db.gifts_by_status("received") if row["worker_id"] is None]
+    text = (
+        f"{e('gift')} <b>Подарки</b>\n"
+        f"{RULE}\n"
+        f"{e('dot')} Принято · <b>{stats['received']}</b>\n"
+        f"{e('up')} Выставлено · <b>{stats['listed']}</b>\n"
+        f"{e('check')} Продано · <b>{stats['sold']}</b>\n"
+        f"{e('coin')} Оборот · <b>{fmt_ton(stats['revenue_nano'])}</b>\n\n"
+        f"{e('star')} Доля воркера · <b>{config.worker_share_percent}%</b>"
+    )
+    if pending:
+        text += f"\n\n{e('warn')} Без привязки · <b>{len(pending)}</b> — разбери через /gift"
+    if stats["skipped"]:
+        text += f"\n{e('cross')} Пропущено · <b>{stats['skipped']}</b>"
+    await message.answer(text)
+
+
 @router.message(Command("stats"))
 async def stats_command(message: Message, db: Database, config: Config) -> None:
     if not _is_admin(message.from_user.id, config):
@@ -199,6 +273,11 @@ async def help_command(message: Message, config: Config) -> None:
             f"<code>/resolve НОМЕР sent|refund</code>\n"
             f"<code>/stats</code>"
         )
+        if config.gifts_enabled:
+            text += (
+                f"\n<code>/gifts</code> — сводка по подаркам\n"
+                f"<code>/gift SLUG ID</code> — привязать подарок"
+            )
     await message.answer(text)
 
 

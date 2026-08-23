@@ -3,3 +3,7 @@ aiogram>=3.30,<4      # ButtonStyle (цветные кнопки) и icon_custom
 tonutils>=0.3
 aiosqlite>=0.19
 python-dotenv>=1.0
+
+# Подсистема подарков (нужна только при GIFTS_ENABLED=true)
+telethon>=1.44
+amrkt>=1.6

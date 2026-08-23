@@ -35,6 +35,23 @@ CREATE TABLE IF NOT EXISTS withdrawals (
     created_at   INTEGER NOT NULL,
     finished_at  INTEGER
 );
+CREATE TABLE IF NOT EXISTS gifts (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug           TEXT UNIQUE,             -- StarGiftUnique.slug, ключ для MRKT
+    gift_id        INTEGER,
+    title          TEXT,
+    saved_id       INTEGER,
+    worker_id      INTEGER,                 -- NULL, если отправитель скрыт
+    status         TEXT NOT NULL,           -- received | listed | sold | paid | skipped
+    can_resell_at  INTEGER NOT NULL DEFAULT 0,
+    list_price_nano INTEGER NOT NULL DEFAULT 0,
+    sold_price_nano INTEGER NOT NULL DEFAULT 0,
+    share_nano     INTEGER NOT NULL DEFAULT 0,
+    note           TEXT,
+    received_at    INTEGER NOT NULL,
+    sold_at        INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_gifts_status ON gifts(status);
 CREATE TABLE IF NOT EXISTS credits (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,
@@ -217,6 +234,101 @@ class Database:
                 (amount_nano, user_id),
             )
             await self.conn.commit()
+
+    # ─── Подарки ──────────────────────────────────────────────────────
+
+    async def add_gift(
+        self,
+        slug: str,
+        gift_id: int,
+        title: str,
+        saved_id: int | None,
+        worker_id: int | None,
+        can_resell_at: int,
+    ) -> int | None:
+        """Регистрирует поступивший подарок. None — если такой slug уже был.
+
+        Повторная регистрация означала бы вторую выплату за один подарок,
+        поэтому slug уникален на уровне схемы.
+        """
+        async with self._lock:
+            cur = await self.conn.execute("SELECT id FROM gifts WHERE slug=?", (slug,))
+            if await cur.fetchone():
+                return None
+            cur = await self.conn.execute(
+                "INSERT INTO gifts (slug, gift_id, title, saved_id, worker_id, status, "
+                "can_resell_at, received_at) VALUES (?,?,?,?,?,'received',?,?)",
+                (slug, gift_id, title, saved_id, worker_id, can_resell_at, int(time.time())),
+            )
+            await self.conn.commit()
+            return cur.lastrowid
+
+    async def get_gift(self, slug: str) -> dict | None:
+        cur = await self.conn.execute("SELECT * FROM gifts WHERE slug=?", (slug,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def gifts_by_status(self, status: str, ready_only: bool = False) -> list[dict]:
+        """Подарки в заданном статусе. ready_only — только вышедшие из кулдауна."""
+        query = "SELECT * FROM gifts WHERE status=?"
+        params: list = [status]
+        if ready_only:
+            query += " AND can_resell_at <= ?"
+            params.append(int(time.time()))
+        query += " ORDER BY id"
+        cur = await self.conn.execute(query, params)
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def mark_gift_listed(self, slug: str, price_nano: int) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE gifts SET status='listed', list_price_nano=? WHERE slug=?",
+                (price_nano, slug),
+            )
+            await self.conn.commit()
+
+    async def mark_gift_sold(self, slug: str, sold_price_nano: int, share_nano: int) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE gifts SET status='sold', sold_price_nano=?, share_nano=?, sold_at=? "
+                "WHERE slug=?",
+                (sold_price_nano, share_nano, int(time.time()), slug),
+            )
+            await self.conn.commit()
+
+    async def mark_gift_paid(self, slug: str) -> None:
+        async with self._lock:
+            await self.conn.execute("UPDATE gifts SET status='paid' WHERE slug=?", (slug,))
+            await self.conn.commit()
+
+    async def mark_gift_skipped(self, slug: str, note: str) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE gifts SET status='skipped', note=? WHERE slug=?", (note[:300], slug)
+            )
+            await self.conn.commit()
+
+    async def attach_gift_worker(self, slug: str, worker_id: int) -> None:
+        """Привязывает подарок к воркеру вручную, если отправитель был скрыт."""
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE gifts SET worker_id=? WHERE slug=?", (worker_id, slug)
+            )
+            await self.conn.commit()
+
+    async def gift_stats(self) -> dict[str, int]:
+        cur = await self.conn.execute(
+            "SELECT status, COUNT(*) AS c, COALESCE(SUM(sold_price_nano),0) AS s FROM gifts "
+            "GROUP BY status"
+        )
+        rows = {r["status"]: (r["c"], r["s"]) for r in await cur.fetchall()}
+        return {
+            "received": rows.get("received", (0, 0))[0],
+            "listed": rows.get("listed", (0, 0))[0],
+            "sold": rows.get("sold", (0, 0))[0] + rows.get("paid", (0, 0))[0],
+            "skipped": rows.get("skipped", (0, 0))[0],
+            "revenue_nano": sum(v[1] for v in rows.values()),
+        }
 
     async def find_stuck_withdrawals(self, older_than_sec: int = 300) -> list[tuple[int, int, int, str]]:
         """Заявки, зависшие в 'processing' — процесс умер между резервом и отправкой.
