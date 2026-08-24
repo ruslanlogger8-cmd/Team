@@ -44,11 +44,18 @@ class Market:
     """Тонкий слой над MarketClient. Импорт ленивый: без GIFTS_ENABLED
     зависимость не нужна."""
 
-    def __init__(self, api_id: int, api_hash: str, session_name: str, workdir: str = ".") -> None:
+    def __init__(
+        self, api_id: int, api_hash: str, session_name: str, workdir: str = ".",
+        proxy: str = "",
+    ) -> None:
         from amrkt import MarketClient
 
+        from .proxy import parse_proxy
+
+        parse_proxy(proxy)  # ранняя проверка адреса: amrkt проглотит любой мусор
         self._client = MarketClient(
-            api_id=api_id, api_hash=api_hash, session_name=session_name, workdir=workdir
+            api_id=api_id, api_hash=api_hash, session_name=session_name,
+            workdir=workdir, proxy=proxy or None,
         )
 
     async def __aenter__(self) -> "Market":

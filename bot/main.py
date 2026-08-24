@@ -95,6 +95,7 @@ async def _start_gifts(
         market = Market(
             config.tg_api_id, config.tg_api_hash,
             session_name=MRKT_SESSION_NAME, workdir=config.mrkt_workdir,
+            proxy=config.tg_proxy,
         )
         await market.__aenter__()
     except Exception as exc:  # noqa: BLE001 — выплаты обязаны пережить это
@@ -110,7 +111,9 @@ async def _start_gifts(
         logger.error("=" * 64)
         return []
 
-    watcher = GiftWatcher(config.tg_api_id, config.tg_api_hash, config.tg_session)
+    watcher = GiftWatcher(
+        config.tg_api_id, config.tg_api_hash, config.tg_session, config.tg_proxy
+    )
     await watcher.connect()
     depositor = Depositor(watcher.client, config.mrkt_deposit_account)
     service = GiftService(db, config, market, depositor)
@@ -165,7 +168,10 @@ async def _start_gifts(
     # те же объекты, что и фоновый цикл.
     dp.workflow_data.update(gift_watcher=watcher, gift_service=service)
 
-    logger.info("Подсистема подарков запущена: доля воркера %s%%", config.worker_share_percent)
+    logger.info(
+        "Подсистема подарков запущена: доля воркера %s%%, прокси %s",
+        config.worker_share_percent, config.tg_proxy or "не задан",
+    )
     return tasks
 
 

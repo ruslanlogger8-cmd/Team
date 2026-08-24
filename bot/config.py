@@ -78,6 +78,7 @@ class Config:
     mrkt_workdir: str
     mrkt_deposit_account: str
     claim_needs_approval: bool
+    tg_proxy: str
     payout_comment: str = field(default="payout")
 
     @staticmethod
@@ -167,5 +168,6 @@ class Config:
             .lstrip("@") or "mrktbank",
             claim_needs_approval=os.environ.get("CLAIM_NEEDS_APPROVAL", "true").lower()
             not in ("0", "false", "no"),
+            tg_proxy=os.environ.get("TG_PROXY", "").strip(),
             payout_comment=os.environ.get("PAYOUT_COMMENT", "payout").strip() or "payout",
         )

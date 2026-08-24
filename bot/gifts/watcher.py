@@ -65,11 +65,17 @@ def parse_gift_action(action, sender_id: int | None) -> IncomingGift | None:
 class GiftWatcher:
     """Слушает аккаунт и отдаёт каждый новый подарок в колбэк."""
 
-    def __init__(self, api_id: int, api_hash: str, session: str) -> None:
+    def __init__(
+        self, api_id: int, api_hash: str, session: str, proxy: str = ""
+    ) -> None:
         from telethon import TelegramClient
         from telethon.sessions import StringSession
 
-        self._client = TelegramClient(StringSession(session), api_id, api_hash)
+        from .proxy import parse_proxy
+
+        self._client = TelegramClient(
+            StringSession(session), api_id, api_hash, proxy=parse_proxy(proxy)
+        )
 
     @property
     def client(self):
