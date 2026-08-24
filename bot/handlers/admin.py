@@ -214,6 +214,60 @@ async def attach_gift(message: Message, db: Database, config: Config) -> None:
     )
 
 
+@router.message(Command("drop"))
+async def drop_gift(message: Message, db: Database, config: Config) -> None:
+    """/drop <slug|all> [причина] — снять подарки, до которых бот не дотянется.
+
+    Смена аккаунта оставляет подарки на старом: передать их некому, а цикл
+    будет биться о них каждый круг. Здесь они закрываются разом.
+    """
+    if not _is_admin(message.from_user.id, config):
+        return
+
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 2:
+        stuck = sum(
+            len(await db.gifts_by_status(status))
+            for status in ("received", "deposited", "listed")
+        )
+        await message.answer(
+            f"{e('warn')} <b>Формат команды</b>\n"
+            f"<code>/drop SLUG [причина]</code>\n"
+            f"<code>/drop all [причина]</code>\n\n"
+            f"{e('dot')} В работе сейчас · <b>{stuck}</b>\n"
+            f"{e('shield')} Проданные и выплаченные не трогаются."
+        )
+        return
+
+    target = parts[1].strip()
+    note = (parts[2].strip() if len(parts) > 2 else "снято администратором")
+
+    if target == "all":
+        count = await db.drop_unfinished_gifts(note)
+        await message.answer(
+            f"{e('check')} <b>Снято с обработки</b>\n"
+            f"{e('gift')} Подарков · <b>{count}</b>\n"
+            f"{e('dot')} Причина · {esc(note)}"
+        )
+        return
+
+    gift = await db.get_gift(target)
+    if gift is None:
+        await message.answer(f"{e('cross')} Подарок <code>{esc(target)}</code> не найден.")
+        return
+    if await db.drop_unfinished_gifts(note, slug=target) == 0:
+        await message.answer(
+            f"{e('warn')} Подарок <code>{esc(target)}</code> в статусе "
+            f"<b>{esc(gift['status'])}</b> — такие не снимаются."
+        )
+        return
+
+    await message.answer(
+        f"{e('check')} Подарок <code>{esc(target)}</code> снят с обработки.\n"
+        f"{e('dot')} Причина · {esc(note)}"
+    )
+
+
 @router.message(Command("gifts"))
 async def gifts_summary(message: Message, db: Database, config: Config) -> None:
     """/gifts — сводка и состояние каждого подарка."""
@@ -312,6 +366,7 @@ async def help_command(message: Message, config: Config) -> None:
             f"\n\n{e('admin')} <b>Команды администратора</b>\n"
             f"<code>/credit ID СУММА [коммент]</code>\n"
             f"<code>/resolve НОМЕР sent|refund</code>\n"
+            f"<code>/drop SLUG|all [причина]</code>\n"
             f"<code>/stats</code>"
         )
         if config.gifts_enabled:
@@ -356,6 +411,7 @@ async def admin_panel(call: CallbackQuery, config: Config) -> None:
         f"{e('dot')} Режим выплат · <b>{mode}</b>\n\n"
         f"<code>/credit ID СУММА [коммент]</code>\n"
         f"<code>/resolve НОМЕР sent|refund</code>\n"
+        f"<code>/drop SLUG|all [причина]</code>\n"
         f"<code>/stats</code>",
         admin_menu(),
     )

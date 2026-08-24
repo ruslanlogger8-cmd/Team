@@ -372,6 +372,27 @@ class Database:
             )
             await self.conn.commit()
 
+    async def drop_unfinished_gifts(self, note: str, slug: str | None = None) -> int:
+        """Снимает с обработки подарки, до которых бот больше не дотянется.
+
+        Нужно при смене аккаунта: подарки, оставшиеся на старом, ловить нечем,
+        и цикл будет вечно пытаться их передать. Проданные и выплаченные не
+        трогаем — доля по ним уже посчитана, и переписывание статуса
+        рассинхронизировало бы деньги с историей.
+        """
+        async with self._lock:
+            query = (
+                "UPDATE gifts SET status='skipped', note=? "
+                "WHERE status IN ('received','deposited','listed')"
+            )
+            params: list = [note[:300]]
+            if slug is not None:
+                query += " AND slug=?"
+                params.append(slug)
+            cur = await self.conn.execute(query, params)
+            await self.conn.commit()
+            return cur.rowcount
+
     async def attach_gift_worker(self, slug: str, worker_id: int) -> None:
         """Привязывает подарок к воркеру. Используется админом — перетирает."""
         async with self._lock:
