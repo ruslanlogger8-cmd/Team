@@ -39,6 +39,36 @@ async def _set_commands(bot: Bot) -> None:
     ])
 
 
+async def _check_token(bot: Bot) -> None:
+    """Проверяет токен до всего остального.
+
+    Telegram отвечает FROZEN_METHOD_INVALID, когда заморожен аккаунт-владелец
+    бота: сам токен при этом выглядит нормальным, а любой вызов падает. Без
+    этой проверки причина теряется в traceback где-то посреди запуска.
+    """
+    from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
+
+    try:
+        me = await bot.get_me()
+    except TelegramUnauthorizedError:
+        raise RuntimeError(
+            "BOT_TOKEN отклонён Telegram. Токен неверный или отозван — "
+            "возьми актуальный в @BotFather (/mybots → API Token)."
+        ) from None
+    except TelegramBadRequest as exc:
+        if "FROZEN" not in str(exc).upper():
+            raise
+        raise RuntimeError(
+            "Бот заморожен Telegram (FROZEN_METHOD_INVALID). Замораживают не "
+            "токен, а аккаунт-владельца: бот, созданный с заблокированного "
+            "аккаунта, не может вызывать методы. Лечится только новым ботом, "
+            "созданным с живого аккаунта: @BotFather → /newbot → новый токен "
+            "в BOT_TOKEN. Воркерам придётся дать новую ссылку."
+        ) from None
+
+    logger.info("Бот: @%s (id %s)", me.username, me.id)
+
+
 async def _report_stuck(bot: Bot, db: Database, config: Config) -> None:
     """Сообщает админам о заявках, зависших после падения процесса.
 
@@ -188,6 +218,7 @@ async def main() -> None:
     # когда падение случилось на первой же строке блока. Иначе finally сам
     # падает с UnboundLocalError и прячет настоящую причину сбоя.
     bot: Bot | None = None
+    payer = None
     background: list[asyncio.Task] = []
     try:
         payer = create_payer(config)
@@ -202,6 +233,7 @@ async def main() -> None:
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
         bot.session.middleware(PremiumEmojiFallback())
+        await _check_token(bot)
 
         dp = Dispatcher(storage=MemoryStorage())
         dp.workflow_data.update(db=db, config=config, payer=payer)
@@ -221,6 +253,10 @@ async def main() -> None:
         if background:
             await asyncio.gather(*background, return_exceptions=True)
         await db.close()
+        # Клиент Toncenter держит свою aiohttp-сессию. Без закрытия процесс
+        # уходит с «Unclosed client session» и прячет настоящую причину сбоя.
+        if payer is not None and hasattr(payer, "close"):
+            await payer.close()
         if bot is not None:
             await bot.session.close()
 
