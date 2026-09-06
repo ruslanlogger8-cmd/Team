@@ -15,10 +15,11 @@ from ..emoji import e, esc
 from ..gifts.claim import ClaimResult, parse_nft_slug, parse_username, submit_claim
 from ..keyboards import (
     back_menu, claim_menu, confirm_withdraw, history_nav, main_menu,
-    wallet_menu, withdraw_choice, withdrawal_actions,
+    payout_request_menu, request_decision, wallet_choice, wallet_menu,
+    withdraw_choice, withdrawal_actions,
 )
 from ..payout import execute_payout, request_payout
-from ..states import ClaimForm, WalletForm, WithdrawForm
+from ..states import ClaimForm, PayoutRequestForm, WalletForm, WithdrawForm
 from ..ui import reset_state, safe_edit, send_screen
 from ..utils import fmt_ton, is_valid_ton_address, parse_ton
 
@@ -784,3 +785,216 @@ async def _notify_claim(bot, config: Config, claim, user, sender_username, photo
                 await bot.send_message(admin_id, caption, reply_markup=keyboard)
         except Exception:  # noqa: BLE001 — админ мог не запускать бота
             logger.warning("Не удалось отправить заявку админу %s", admin_id)
+
+
+# ─── Заявка на выплату: фото передачи + адрес ──────────────────────────
+
+REQUEST_STATUS = {
+    "pending": ("time", "ждёт решения"),
+    "processing": ("time", "администратор считает сумму"),
+    "paid": ("check", "выплачено"),
+    "rejected": ("cross", "отказано"),
+    "failed": ("warn", "не прошла"),
+}
+
+
+@router.callback_query(F.data == "m:payout_request")
+async def payout_request_screen(
+    call: CallbackQuery, config: Config, state: FSMContext
+) -> None:
+    await reset_state(state)
+    await safe_edit(
+        call,
+        f"{e('withdraw')} <b>Заявка на выплату</b>\n"
+        f"{e('dot')} Шаг 1 · скриншот передачи подарка\n"
+        f"{e('dot')} Шаг 2 · адрес TON, куда отправить\n\n"
+        f"{e('star')} Доля · <b>{config.worker_share_percent}%</b> от суммы продажи\n"
+        f"{e('shield')} Сумму продажи ставит администратор, "
+        f"он же подтверждает выплату.",
+        payout_request_menu(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "pr:new")
+async def payout_request_start(
+    call: CallbackQuery, db: Database, state: FSMContext
+) -> None:
+    if await db.has_open_payout_request(call.from_user.id):
+        await call.answer("Одна заявка уже на рассмотрении", show_alert=True)
+        return
+
+    await state.set_state(PayoutRequestForm.waiting_photo)
+    await safe_edit(
+        call,
+        f"{e('gift')} <b>Скриншот передачи</b>\n"
+        f"{e('dot')} Шаг 1 из 2\n"
+        f"{e('dot')} Пришли фото, где видно, что подарок передан менеджеру.\n\n"
+        f"{e('warn')} Именно фото, не файлом — иначе не приложится к заявке.",
+        back_menu(),
+    )
+    await call.answer()
+
+
+@router.message(PayoutRequestForm.waiting_photo, F.photo)
+async def payout_request_photo(
+    message: Message, db: Database, state: FSMContext
+) -> None:
+    # Последний размер — самый крупный из присланных Telegram.
+    await state.update_data(photo_id=message.photo[-1].file_id)
+
+    worker = await db.get_worker(message.from_user.id)
+    if worker and worker.wallet:
+        await state.set_state(None)
+        await message.answer(
+            f"{e('wallet')} <b>Куда отправить</b>\n"
+            f"{e('dot')} Шаг 2 из 2\n"
+            f"{e('dot')} Сохранённый адрес\n<code>{esc(worker.wallet)}</code>",
+            reply_markup=wallet_choice(worker.wallet),
+        )
+        return
+
+    await state.set_state(PayoutRequestForm.waiting_wallet)
+    await message.answer(
+        f"{e('wallet')} <b>Адрес для выплаты</b>\n"
+        f"{e('dot')} Шаг 2 из 2\n"
+        f"{e('dot')} Пришли адрес TON одним сообщением.\n"
+        f"{e('dot')} Начинается с <code>UQ</code> или <code>EQ</code>, 48 символов."
+    )
+
+
+@router.message(PayoutRequestForm.waiting_photo)
+async def payout_request_photo_expected(message: Message) -> None:
+    """Документ и текст здесь не подходят: к заявке прикладывается фото."""
+    await message.answer(
+        f"{e('warn')} <b>Жду фото</b>\n"
+        f"{e('dot')} Пришли скриншот передачи именно картинкой."
+    )
+
+
+@router.callback_query(F.data == "pr:other")
+async def payout_request_other_wallet(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PayoutRequestForm.waiting_wallet)
+    await safe_edit(
+        call,
+        f"{e('key')} <b>Другой адрес</b>\n"
+        f"{e('dot')} Пришли адрес TON одним сообщением.\n"
+        f"{e('dot')} Начинается с <code>UQ</code> или <code>EQ</code>, 48 символов.\n\n"
+        f"{e('shield')} Адрес проверяется по контрольной сумме — "
+        f"с опечаткой не пройдёт.",
+        back_menu(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "pr:saved")
+async def payout_request_saved_wallet(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
+    worker = await db.get_worker(call.from_user.id)
+    if worker is None or not worker.wallet:
+        await call.answer("Сохранённого адреса нет", show_alert=True)
+        return
+
+    data = await state.get_data()
+    await _submit_payout_request(
+        call.message, call.from_user, db, config, state,
+        wallet=worker.wallet, photo_id=data.get("photo_id"),
+    )
+    await call.answer()
+
+
+@router.message(PayoutRequestForm.waiting_wallet, F.text)
+async def payout_request_wallet(
+    message: Message, db: Database, config: Config, state: FSMContext
+) -> None:
+    address = (message.text or "").strip()
+    if not is_valid_ton_address(address):
+        await message.answer(
+            f"{e('cross')} <b>Адрес не прошёл проверку</b>\n"
+            f"{e('dot')} Скопируй адрес целиком из кошелька.\n"
+            f"{e('dot')} Проверяется контрольная сумма, поэтому даже одна "
+            f"опечатка не пройдёт."
+        )
+        return
+
+    data = await state.get_data()
+    await _submit_payout_request(
+        message, message.from_user, db, config, state,
+        wallet=address, photo_id=data.get("photo_id"),
+    )
+
+
+async def _submit_payout_request(
+    target: Message, user, db: Database, config: Config, state: FSMContext,
+    wallet: str, photo_id: str | None,
+) -> None:
+    """Создаёт заявку и показывает её админам с кнопками решения."""
+    await state.clear()
+
+    if await db.has_open_payout_request(user.id):
+        await target.answer(
+            f"{e('warn')} <b>Заявка уже на рассмотрении</b>\n"
+            f"{e('dot')} Дождись решения по ней.",
+            reply_markup=back_menu(),
+        )
+        return
+
+    request_id = await db.add_payout_request(user.id, wallet, photo_id)
+
+    await target.answer(
+        f"{e('check')} <b>Заявка отправлена</b>\n"
+        f"{e('dot')} Заявка №{request_id}\n"
+        f"{e('wallet')} <code>{esc(wallet)}</code>\n\n"
+        f"{e('time')} Администратор проверит и отправит "
+        f"{config.worker_share_percent}% от суммы продажи.",
+        reply_markup=back_menu(),
+    )
+
+    who = f"@{user.username}" if user.username else str(user.id)
+    caption = (
+        f"{e('withdraw')} <b>Заявка на выплату</b>\n"
+        f"{e('dot')} Заявка №{request_id}\n"
+        f"{e('profile')} {esc(who)} · <code>{user.id}</code>\n"
+        f"{e('wallet')} <code>{esc(wallet)}</code>"
+    )
+    keyboard = request_decision(request_id)
+    for admin_id in config.admin_ids:
+        try:
+            if photo_id:
+                await target.bot.send_photo(
+                    admin_id, photo_id, caption=caption, reply_markup=keyboard
+                )
+            else:
+                await target.bot.send_message(admin_id, caption, reply_markup=keyboard)
+        except Exception:  # noqa: BLE001 — админ мог не запускать бота
+            logger.warning("Не удалось отправить заявку админу %s", admin_id)
+
+
+@router.callback_query(F.data == "pr:mine")
+async def my_payout_requests(
+    call: CallbackQuery, db: Database, state: FSMContext
+) -> None:
+    await reset_state(state)
+    rows = [
+        row for row in await db.pending_payout_requests()
+        if row["worker_id"] == call.from_user.id
+    ]
+    if not rows:
+        await safe_edit(
+            call,
+            f"{e('dot')} <b>Открытых заявок нет</b>\n"
+            f"{e('history')} Выплаченные смотри в «Истории».",
+            payout_request_menu(),
+        )
+        await call.answer()
+        return
+
+    icon_key, label = REQUEST_STATUS["pending"]
+    body = "\n\n".join(
+        f"{e(icon_key)} Заявка №{row['id']} · {label}\n"
+        f"{e('wallet')} <code>{esc(row['wallet'])}</code>"
+        for row in rows
+    )
+    await safe_edit(call, f"{e('withdraw')} <b>Мои заявки</b>\n\n{body}", payout_request_menu())
+    await call.answer()

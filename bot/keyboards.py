@@ -42,9 +42,10 @@ def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
             btn("Кошелёк", "m:wallet", PRIMARY, "wallet"),
             btn("История", "m:history", PRIMARY, "history"),
         ],
+        [btn("Заявка на выплату", "m:payout_request", SUCCESS, "withdraw")],
         [btn("Подать заявку на подарок", "m:claim", SUCCESS, "gift")],
         [btn("Топ воркеров", "m:top", PRIMARY, "top")],
-        [btn("Вывести средства", "m:withdraw", SUCCESS, "withdraw")],
+        [btn("Вывести баланс", "m:withdraw", SUCCESS, "coin")],
     ]
     if is_admin:
         rows.append([btn("Панель администратора", "m:admin", DANGER, "admin")])
@@ -92,6 +93,8 @@ def history_nav(page: int, total_pages: int) -> InlineKeyboardMarkup:
 def admin_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [btn("Заявки на выплату", "a:requests", SUCCESS, "withdraw")],
+            [btn("Воркеры", "a:workers", PRIMARY, "users")],
             [btn("Статистика", "a:stats", PRIMARY, "stats")],
             [btn("В меню", "m:main", PRIMARY, "back")],
         ]
@@ -139,5 +142,68 @@ def withdrawal_actions(withdrawal_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [btn("Выплатить", f"wpay:{withdrawal_id}", SUCCESS, "withdraw")],
             [btn("Отклонить", f"wrej:{withdrawal_id}", DANGER, "cross")],
+        ]
+    )
+
+
+def payout_request_menu() -> InlineKeyboardMarkup:
+    """Экран заявки на выплату у воркера."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [btn("Подать заявку", "pr:new", SUCCESS, "withdraw")],
+            [btn("Мои заявки", "pr:mine", PRIMARY, "history")],
+            [btn("В меню", "m:main", PRIMARY, "back")],
+        ]
+    )
+
+
+def wallet_choice(saved: str) -> InlineKeyboardMarkup:
+    """Куда платить: сохранённый адрес или новый."""
+    short = f"{saved[:6]}…{saved[-4:]}" if len(saved) > 12 else saved
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [btn(f"На сохранённый · {short}", "pr:saved", SUCCESS, "wallet")],
+            [btn("Указать другой адрес", "pr:other", PRIMARY, "key")],
+            [btn("В меню", "m:main", PRIMARY, "back")],
+        ]
+    )
+
+
+def request_decision(request_id: int) -> InlineKeyboardMarkup:
+    """Решение админа по заявке на выплату."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            btn("Принять", f"pr:ok:{request_id}", SUCCESS, "check"),
+            btn("Отказать", f"pr:no:{request_id}", DANGER, "cross"),
+        ]]
+    )
+
+
+def confirm_share(request_id: int) -> InlineKeyboardMarkup:
+    """Последний шаг перед отправкой: сумма уже посчитана и показана."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [btn("Отправить", f"pr:pay:{request_id}", SUCCESS, "withdraw")],
+            [btn("Отмена", f"pr:cancel:{request_id}", DANGER, "cross")],
+        ]
+    )
+
+
+def workers_list(rows: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """Список воркеров кнопками — чтобы не вводить id руками."""
+    keyboard = [
+        [btn(name, f"wk:{worker_id}", PRIMARY, "profile")]
+        for worker_id, name in rows
+    ]
+    keyboard.append([btn("В меню", "m:main", PRIMARY, "back")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def worker_actions(worker_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [btn("Начислить", f"wk:credit:{worker_id}", SUCCESS, "coin")],
+            [btn("Выплатить баланс", f"pay:{worker_id}", SUCCESS, "withdraw")],
+            [btn("К списку", "a:workers", PRIMARY, "back")],
         ]
     )

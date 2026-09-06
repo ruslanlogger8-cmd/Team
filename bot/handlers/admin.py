@@ -5,13 +5,19 @@ import time
 
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ..config import Config
 from ..db import Database
 from ..emoji import e, esc, premium_enabled
-from ..keyboards import admin_menu, back_menu
-from ..payout import approve_payout, execute_payout, reject_payout
+from ..gifts.pricing import worker_share
+from ..keyboards import (
+    admin_menu, back_menu, confirm_share, request_decision, worker_actions,
+    workers_list,
+)
+from ..payout import approve_payout, check_limits, execute_payout, reject_payout
+from ..states import ApproveForm, CreditForm
 from ..ui import safe_edit
 from ..utils import fmt_ton, parse_ton
 
@@ -761,3 +767,420 @@ async def decline_withdrawal(call: CallbackQuery, db: Database, config: Config) 
         f"{e('coin')} {fmt_ton(result.amount_nano)} вернулись на баланс.\n"
         f"{e('dot')} Напиши администратору, если это ошибка.",
     )
+
+
+# ─── Заявки на выплату: принять, ввести сумму продажи, отправить ───────
+
+@router.callback_query(F.data.startswith("pr:ok:"))
+async def request_accept(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
+    """Заявка берётся в работу, дальше админ вводит сумму продажи."""
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    request_id = int(call.data.rsplit(":", 1)[1])
+    row = await db.take_payout_request(request_id)
+    if row is None:
+        await call.answer("Заявка уже закрыта", show_alert=True)
+        return
+
+    await state.set_state(ApproveForm.waiting_sale)
+    await state.update_data(request_id=request_id)
+    await call.answer()
+    await call.message.answer(
+        f"{e('coin')} <b>За сколько продан подарок</b>\n"
+        f"{e('dot')} Заявка №{request_id}\n"
+        f"{e('profile')} Воркер · <code>{row['worker_id']}</code>\n\n"
+        f"{e('dot')} Пришли сумму продажи в TON · <code>12.5</code>\n"
+        f"{e('star')} Воркеру уйдёт {config.worker_share_percent}% от неё."
+    )
+
+
+@router.message(ApproveForm.waiting_sale, F.text)
+async def request_sale_amount(
+    message: Message, db: Database, config: Config, state: FSMContext
+) -> None:
+    if not _is_admin(message.from_user.id, config):
+        return
+
+    data = await state.get_data()
+    request_id = data.get("request_id")
+    if request_id is None:
+        await state.clear()
+        return
+
+    try:
+        sale_nano = parse_ton(message.text)
+    except ValueError:
+        await message.answer(
+            f"{e('cross')} <b>Это не сумма</b>\n"
+            f"{e('dot')} Пришли число · <code>12.5</code> или <code>0,3</code>"
+        )
+        return
+
+    if sale_nano <= 0:
+        await message.answer(f"{e('cross')} Сумма продажи должна быть больше нуля.")
+        return
+
+    share_nano = worker_share(sale_nano, config.worker_share_percent)
+    if share_nano <= 0:
+        await message.answer(
+            f"{e('cross')} <b>Доля вышла нулевой</b>\n"
+            f"{e('dot')} Проверь сумму продажи."
+        )
+        return
+
+    row = await db.get_payout_request(request_id)
+    await state.update_data(sale_nano=sale_nano, share_nano=share_nano)
+    await state.set_state(None)
+
+    # Подтверждение отдельным шагом: одна лишняя цифра в сумме — это лишние
+    # TON, а перевод отменить уже нельзя.
+    await message.answer(
+        f"{e('withdraw')} <b>Проверь перед отправкой</b>\n"
+        f"{e('dot')} Заявка №{request_id}\n"
+        f"{e('profile')} Воркер · <code>{row['worker_id']}</code>\n"
+        f"{e('coin')} Продан за · <b>{fmt_ton(sale_nano)}</b>\n"
+        f"{e('star')} Доля {config.worker_share_percent}% · <b>{fmt_ton(share_nano)}</b>\n"
+        f"{e('wallet')} <code>{esc(row['wallet'])}</code>",
+        reply_markup=confirm_share(request_id),
+    )
+
+
+@router.callback_query(F.data.startswith("pr:pay:"))
+async def request_pay(
+    call: CallbackQuery, db: Database, config: Config, payer, state: FSMContext
+) -> None:
+    """Отправляет долю воркеру с горячего кошелька."""
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    request_id = int(call.data.rsplit(":", 1)[1])
+    data = await state.get_data()
+    share_nano = data.get("share_nano")
+    sale_nano = data.get("sale_nano", 0)
+    await state.clear()
+
+    row = await db.get_payout_request(request_id)
+    if row is None or row["status"] != "processing" or not share_nano:
+        await call.answer("Заявка уже закрыта", show_alert=True)
+        return
+
+    await call.answer()
+    await safe_edit(call, f"{e('time')} Отправляю {fmt_ton(share_nano)}…")
+
+    blocked = await check_limits(
+        db, share_nano, config.max_payout_nano, config.max_daily_payout_nano
+    )
+    if blocked:
+        await db.release_payout_request(request_id)
+        await safe_edit(
+            call,
+            f"{e('shield')} <b>Остановлено лимитом</b>\n"
+            f"{e('dot')} {esc(blocked)}\n"
+            f"{e('check')} Заявка №{request_id} вернулась в очередь.",
+        )
+        return
+
+    try:
+        tx_hash = await payer.send(row["wallet"], share_nano)
+    except Exception as exc:  # noqa: BLE001 — заявка обязана пережить сбой сети
+        await db.release_payout_request(request_id)
+        await safe_edit(
+            call,
+            f"{e('cross')} <b>Перевод не прошёл</b>\n"
+            f"{e('dot')} {esc(str(exc) or exc.__class__.__name__)}\n"
+            f"{e('check')} Заявка №{request_id} вернулась в очередь, "
+            f"деньги не списаны.",
+        )
+        return
+
+    await db.finish_payout_request(
+        request_id, "paid", sale_nano, share_nano, tx_hash,
+        note=f"продан за {fmt_ton(sale_nano)}",
+    )
+    # Та же выплата попадает в общую историю: иначе её не увидят ни топ,
+    # ни суточный лимит, ни «История» у воркера.
+    await db.record_direct_payout(row["worker_id"], share_nano, row["wallet"], tx_hash)
+
+    demo = f"\n{e('warn')} Режим DRY_RUN" if config.dry_run else ""
+    await safe_edit(
+        call,
+        f"{e('check')} <b>Выплачено по заявке №{request_id}</b>\n"
+        f"{e('profile')} Воркер · <code>{row['worker_id']}</code>\n"
+        f"{e('coin')} Продан за · {fmt_ton(sale_nano)}\n"
+        f"{e('star')} Отправлено · <b>{fmt_ton(share_nano)}</b>\n"
+        f"{e('link')} <code>{esc(tx_hash)}</code>{demo}",
+    )
+    await _notify(
+        call, row["worker_id"],
+        f"{e('check')} <b>Выплата отправлена</b>\n"
+        f"{e('coin')} <b>{fmt_ton(share_nano)}</b>\n"
+        f"{e('wallet')} <code>{esc(row['wallet'])}</code>\n"
+        f"{e('link')} <code>{esc(tx_hash)}</code>{demo}",
+    )
+
+
+@router.callback_query(F.data.startswith("pr:cancel:"))
+async def request_cancel(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
+    """Отмена на шаге суммы — заявка возвращается в очередь, не закрывается."""
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    request_id = int(call.data.rsplit(":", 1)[1])
+    await state.clear()
+    await db.release_payout_request(request_id)
+    await safe_edit(
+        call,
+        f"{e('dot')} <b>Отменено</b>\n"
+        f"{e('dot')} Заявка №{request_id} снова в очереди — открой её "
+        f"через <code>/requests</code>.",
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("pr:no:"))
+async def request_reject(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    request_id = int(call.data.rsplit(":", 1)[1])
+    row = await db.take_payout_request(request_id)
+    if row is None:
+        await call.answer("Заявка уже закрыта", show_alert=True)
+        return
+
+    await state.clear()
+    await db.finish_payout_request(request_id, "rejected", note="отказ администратора")
+    await call.answer()
+    await safe_edit(
+        call,
+        f"{e('cross')} <b>Заявка №{request_id} отклонена</b>\n"
+        f"{e('profile')} Воркер · <code>{row['worker_id']}</code>",
+    )
+    await _notify(
+        call, row["worker_id"],
+        f"{e('cross')} <b>Заявка отклонена</b>\n"
+        f"{e('dot')} Напиши администратору, если это ошибка.",
+    )
+
+
+@router.message(Command("requests"))
+async def requests_command(message: Message, db: Database, config: Config) -> None:
+    """/requests — открытые заявки на выплату, каждая со своими кнопками."""
+    if not _is_admin(message.from_user.id, config):
+        return
+
+    rows = await db.pending_payout_requests()
+    if not rows:
+        await message.answer(f"{e('check')} Открытых заявок нет.")
+        return
+
+    for row in rows[:15]:
+        who = f"@{row['username']}" if row["username"] else str(row["worker_id"])
+        caption = (
+            f"{e('withdraw')} <b>Заявка №{row['id']}</b>\n"
+            f"{e('profile')} {esc(who)} · <code>{row['worker_id']}</code>\n"
+            f"{e('wallet')} <code>{esc(row['wallet'])}</code>"
+        )
+        if row["photo_id"]:
+            await message.answer_photo(
+                row["photo_id"], caption=caption,
+                reply_markup=request_decision(row["id"]),
+            )
+        else:
+            await message.answer(caption, reply_markup=request_decision(row["id"]))
+
+
+# ─── Воркеры кнопками: без ввода id руками ────────────────────────────
+
+@router.callback_query(F.data == "a:workers")
+async def workers_screen(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    await state.clear()
+    rows = await db.all_workers()
+    if not rows:
+        await safe_edit(
+            call,
+            f"{e('users')} <b>Воркеров нет</b>\n"
+            f"{e('dot')} Появятся, как только кто-нибудь нажмёт /start.",
+            back_menu(),
+        )
+        await call.answer()
+        return
+
+    labels = [
+        (worker_id, f"{name} · {fmt_ton(balance)}")
+        for worker_id, name, balance in rows
+    ]
+    await safe_edit(
+        call,
+        f"{e('users')} <b>Воркеры</b>\n"
+        f"{e('dot')} Выбери, чтобы начислить или выплатить.",
+        workers_list(labels),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("wk:credit:"))
+async def worker_credit_prompt(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    worker_id = int(call.data.rsplit(":", 1)[1])
+    worker = await db.get_worker(worker_id)
+    if worker is None:
+        await call.answer("Воркер не найден", show_alert=True)
+        return
+
+    await state.set_state(CreditForm.waiting_amount)
+    await state.update_data(target_id=worker_id)
+    await safe_edit(
+        call,
+        f"{e('coin')} <b>Начисление</b>\n"
+        f"{e('profile')} {esc(worker.full_name)} · <code>{worker_id}</code>\n"
+        f"{e('balance')} Сейчас · {fmt_ton(worker.balance_nano)}\n\n"
+        f"{e('dot')} Пришли сумму · <code>1.5</code>\n"
+        f"{e('dot')} Со знаком минус — списание · <code>-0.5</code>",
+        back_menu(),
+    )
+    await call.answer()
+
+
+@router.message(CreditForm.waiting_amount, F.text)
+async def worker_credit_amount(
+    message: Message, db: Database, config: Config, state: FSMContext
+) -> None:
+    if not _is_admin(message.from_user.id, config):
+        return
+
+    data = await state.get_data()
+    worker_id = data.get("target_id")
+    if worker_id is None:
+        await state.clear()
+        return
+
+    raw = (message.text or "").strip()
+    try:
+        amount_nano = parse_ton(raw.lstrip("-"))
+    except ValueError:
+        await message.answer(
+            f"{e('cross')} <b>Это не сумма</b>\n"
+            f"{e('dot')} Пришли число · <code>1.5</code> или <code>-0,5</code>"
+        )
+        return
+    if raw.startswith("-"):
+        amount_nano = -amount_nano
+
+    await state.clear()
+    new_balance = await db.credit(worker_id, amount_nano, message.from_user.id, "кнопкой")
+    sign = "+" if amount_nano > 0 else ""
+    await message.answer(
+        f"{e('check')} <b>Начислено</b>\n"
+        f"{e('coin')} {sign}{fmt_ton(amount_nano)}\n"
+        f"{e('profile')} Воркер · <code>{worker_id}</code>\n"
+        f"{e('balance')} Новый баланс · <b>{fmt_ton(new_balance)}</b>",
+        reply_markup=worker_actions(worker_id),
+    )
+    await _notify(
+        message, worker_id,
+        f"{e('balance')} <b>Начисление</b>\n"
+        f"{e('coin')} {sign}{fmt_ton(amount_nano)}\n"
+        f"{e('dot')} Баланс · <b>{fmt_ton(new_balance)}</b>",
+    )
+
+
+@router.callback_query(F.data.startswith("wk:"))
+async def worker_card(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
+    """Карточка воркера. Регистрируется после wk:credit: — иначе перехватит его."""
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    await state.clear()
+    try:
+        worker_id = int(call.data.split(":", 1)[1])
+    except ValueError:
+        await call.answer("Битая кнопка", show_alert=True)
+        return
+
+    worker = await db.get_worker(worker_id)
+    if worker is None:
+        await call.answer("Воркер не найден", show_alert=True)
+        return
+
+    paid_total, paid_count = await db.worker_totals(worker_id)
+    wallet = f"<code>{esc(worker.wallet)}</code>" if worker.wallet else "не указан"
+    await safe_edit(
+        call,
+        f"{e('profile')} <b>{esc(worker.full_name)}</b>\n"
+        f"{e('id')} <code>{worker_id}</code>\n"
+        f"{e('balance')} Баланс · <b>{fmt_ton(worker.balance_nano)}</b>\n"
+        f"{e('check')} Выплачено · {fmt_ton(paid_total)} за {paid_count}\n"
+        f"{e('wallet')} {wallet}",
+        worker_actions(worker_id),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "a:requests")
+async def admin_requests_screen(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
+    """Открытые заявки: отправляются отдельными сообщениями, чтобы было видно фото."""
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    await state.clear()
+    rows = await db.pending_payout_requests()
+    if not rows:
+        await safe_edit(
+            call,
+            f"{e('check')} <b>Открытых заявок нет</b>\n"
+            f"{e('dot')} Появятся, когда воркер подаст.",
+            back_menu(),
+        )
+        await call.answer()
+        return
+
+    await safe_edit(
+        call,
+        f"{e('withdraw')} <b>Заявок на выплату · {len(rows)}</b>\n"
+        f"{e('dot')} Каждая ниже, со своими кнопками.",
+        back_menu(),
+    )
+    for row in rows[:15]:
+        who = f"@{row['username']}" if row["username"] else str(row["worker_id"])
+        caption = (
+            f"{e('withdraw')} <b>Заявка №{row['id']}</b>\n"
+            f"{e('profile')} {esc(who)} · <code>{row['worker_id']}</code>\n"
+            f"{e('wallet')} <code>{esc(row['wallet'])}</code>"
+        )
+        if row["photo_id"]:
+            await call.message.answer_photo(
+                row["photo_id"], caption=caption,
+                reply_markup=request_decision(row["id"]),
+            )
+        else:
+            await call.message.answer(caption, reply_markup=request_decision(row["id"]))
+    await call.answer()

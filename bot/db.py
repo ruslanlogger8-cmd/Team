@@ -67,6 +67,20 @@ CREATE TABLE IF NOT EXISTS claim_requests (
     resolved_at     INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_claims_status ON claim_requests(status);
+CREATE TABLE IF NOT EXISTS payout_requests (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    worker_id   INTEGER NOT NULL,
+    wallet      TEXT NOT NULL,           -- куда платить, воркер указывает в заявке
+    photo_id    TEXT,                    -- скриншот передачи подарка
+    status      TEXT NOT NULL,           -- pending | processing | paid | rejected | failed
+    sale_nano   INTEGER NOT NULL DEFAULT 0,   -- за сколько продан, вводит админ
+    share_nano  INTEGER NOT NULL DEFAULT 0,   -- доля воркера от этой суммы
+    tx_hash     TEXT,
+    note        TEXT,
+    created_at  INTEGER NOT NULL,
+    resolved_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_payout_requests_status ON payout_requests(status);
 CREATE TABLE IF NOT EXISTS credits (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,
@@ -271,6 +285,102 @@ class Database:
             except Exception:
                 await self.conn.rollback()
                 raise
+
+    # ─── Заявки на выплату (фото + адрес, решение по кнопке) ──────────
+
+    async def add_payout_request(
+        self, worker_id: int, wallet: str, photo_id: str | None
+    ) -> int:
+        async with self._lock:
+            cur = await self.conn.execute(
+                "INSERT INTO payout_requests (worker_id, wallet, photo_id, status, created_at) "
+                "VALUES (?,?,?,'pending',?)",
+                (worker_id, wallet, photo_id, int(time.time())),
+            )
+            await self.conn.commit()
+            return cur.lastrowid
+
+    async def get_payout_request(self, request_id: int) -> dict | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM payout_requests WHERE id=?", (request_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def has_open_payout_request(self, worker_id: int) -> bool:
+        cur = await self.conn.execute(
+            "SELECT 1 FROM payout_requests "
+            "WHERE worker_id=? AND status IN ('pending','processing') LIMIT 1",
+            (worker_id,),
+        )
+        return await cur.fetchone() is not None
+
+    async def take_payout_request(self, request_id: int) -> dict | None:
+        """Забирает заявку в работу. None — если её уже забрали или закрыли.
+
+        Условие внутри UPDATE закрывает двойное нажатие и второго админа:
+        выплату запустит только тот, кто первым перевёл заявку из 'pending'.
+        """
+        async with self._lock:
+            cur = await self.conn.execute(
+                "UPDATE payout_requests SET status='processing' "
+                "WHERE id=? AND status='pending'",
+                (request_id,),
+            )
+            await self.conn.commit()
+            if cur.rowcount == 0:
+                return None
+        return await self.get_payout_request(request_id)
+
+    async def release_payout_request(self, request_id: int) -> None:
+        """Возвращает заявку в очередь — админ передумал на шаге ввода суммы."""
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE payout_requests SET status='pending' "
+                "WHERE id=? AND status='processing'",
+                (request_id,),
+            )
+            await self.conn.commit()
+
+    async def finish_payout_request(
+        self, request_id: int, status: str, sale_nano: int = 0,
+        share_nano: int = 0, tx_hash: str | None = None, note: str = "",
+    ) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE payout_requests SET status=?, sale_nano=?, share_nano=?, "
+                "tx_hash=?, note=?, resolved_at=? WHERE id=?",
+                (status, sale_nano, share_nano, tx_hash, note[:300],
+                 int(time.time()), request_id),
+            )
+            await self.conn.commit()
+
+    async def record_direct_payout(
+        self, user_id: int, amount_nano: int, wallet: str, tx_hash: str
+    ) -> int:
+        """Записывает выплату, прошедшую мимо баланса, в общую историю.
+
+        Деньги по заявке идут сразу от суммы продажи, баланс не участвует.
+        Но история, топ и суточный лимит считаются по таблице withdrawals —
+        без этой записи выплата была бы невидима для всех трёх.
+        """
+        now = int(time.time())
+        async with self._lock:
+            cur = await self.conn.execute(
+                "INSERT INTO withdrawals (user_id, amount_nano, wallet, status, "
+                "tx_hash, created_at, finished_at) VALUES (?,?,?,'paid',?,?,?)",
+                (user_id, amount_nano, wallet, tx_hash, now, now),
+            )
+            await self.conn.commit()
+            return cur.lastrowid
+
+    async def pending_payout_requests(self) -> list[dict]:
+        cur = await self.conn.execute(
+            "SELECT r.*, k.username, k.full_name FROM payout_requests r "
+            "LEFT JOIN workers k ON k.user_id = r.worker_id "
+            "WHERE r.status IN ('pending','processing') ORDER BY r.id"
+        )
+        return [dict(row) for row in await cur.fetchall()]
 
     async def get_withdrawal(self, withdrawal_id: int) -> dict | None:
         cur = await self.conn.execute(
@@ -640,6 +750,21 @@ class Database:
             "WHERE balance_nano > 0 ORDER BY balance_nano DESC"
         )
         return [(r["user_id"], r["full_name"], r["balance_nano"]) for r in await cur.fetchall()]
+
+    async def all_workers(self, limit: int = 30) -> list[tuple[int, str, int]]:
+        """Все воркеры для выбора кнопкой: id, имя, баланс.
+
+        Сначала те, у кого есть баланс — по ним чаще всего и нужно действие.
+        """
+        cur = await self.conn.execute(
+            "SELECT user_id, full_name, balance_nano FROM workers "
+            "ORDER BY balance_nano DESC, created_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [
+            (r["user_id"], r["full_name"], r["balance_nano"])
+            for r in await cur.fetchall()
+        ]
 
     async def stats(self) -> dict[str, int]:
         cur = await self.conn.execute("SELECT COUNT(*) AS c, COALESCE(SUM(balance_nano),0) AS s FROM workers")

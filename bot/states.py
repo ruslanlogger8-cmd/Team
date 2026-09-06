@@ -18,3 +18,16 @@ class ClaimForm(StatesGroup):
 
 class WithdrawForm(StatesGroup):
     waiting_amount = State()
+
+
+class PayoutRequestForm(StatesGroup):
+    """Заявка воркера: скриншот передачи и адрес для выплаты."""
+
+    waiting_photo = State()
+    waiting_wallet = State()
+
+
+class ApproveForm(StatesGroup):
+    """Админ принял заявку и вводит сумму продажи."""
+
+    waiting_sale = State()
