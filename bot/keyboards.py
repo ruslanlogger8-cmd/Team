@@ -131,3 +131,13 @@ def pay_button(worker_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[btn("Выплатить сейчас", f"pay:{worker_id}", SUCCESS, "withdraw")]]
     )
+
+
+def withdrawal_actions(withdrawal_id: int) -> InlineKeyboardMarkup:
+    """Решение админа по придержанной заявке воркера."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [btn("Выплатить", f"wpay:{withdrawal_id}", SUCCESS, "withdraw")],
+            [btn("Отклонить", f"wrej:{withdrawal_id}", DANGER, "cross")],
+        ]
+    )

@@ -11,7 +11,7 @@ from ..config import Config
 from ..db import Database
 from ..emoji import e, esc, premium_enabled
 from ..keyboards import admin_menu, back_menu
-from ..payout import execute_payout
+from ..payout import approve_payout, execute_payout, reject_payout
 from ..ui import safe_edit
 from ..utils import fmt_ton, parse_ton
 
@@ -618,17 +618,30 @@ async def pay_command(message: Message, db: Database, config: Config) -> None:
     if not _is_admin(message.from_user.id, config):
         return
 
-    from ..keyboards import pay_button
+    from ..keyboards import pay_button, withdrawal_actions
 
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2:
+        # Сначала заявки: воркер их уже подал и ждёт именно кнопки.
+        held = await db.held_withdrawals()
+        for row in held[:15]:
+            who = f"@{row['username']}" if row["username"] else str(row["user_id"])
+            await message.answer(
+                f"{e('withdraw')} <b>Заявка №{row['id']}</b>\n"
+                f"{e('profile')} {esc(who)} · <code>{row['user_id']}</code>\n"
+                f"{e('coin')} <b>{fmt_ton(row['amount_nano'])}</b>\n"
+                f"{e('wallet')} <code>{esc(row['wallet'])}</code>",
+                reply_markup=withdrawal_actions(row["id"]),
+            )
+
         pending = [
             w for w in await db.all_workers_with_balance()
         ]
         if not pending:
-            await message.answer(f"{e('check')} Балансов к выплате нет.")
+            if not held:
+                await message.answer(f"{e('check')} Балансов к выплате нет.")
             return
-        await message.answer(f"{e('withdraw')} <b>Ждут выплаты</b>")
+        await message.answer(f"{e('withdraw')} <b>Балансы без заявки</b>")
         for worker_id, name, balance in pending[:15]:
             await message.answer(
                 f"{e('profile')} {esc(name)} · <code>{worker_id}</code>\n"
@@ -652,4 +665,99 @@ async def pay_command(message: Message, db: Database, config: Config) -> None:
         f"{e('profile')} {esc(worker.full_name)} · <code>{worker_id}</code>\n"
         f"{e('coin')} Баланс · <b>{fmt_ton(worker.balance_nano)}</b>",
         reply_markup=pay_button(worker_id),
+    )
+
+
+@router.callback_query(F.data.startswith("wpay:"))
+async def approve_withdrawal(
+    call: CallbackQuery, db: Database, config: Config, payer
+) -> None:
+    """Отправляет придержанную заявку воркера в сеть."""
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    try:
+        withdrawal_id = int(call.data.split(":", 1)[1])
+    except ValueError:
+        await call.answer("Битая кнопка", show_alert=True)
+        return
+
+    row = await db.get_withdrawal(withdrawal_id)
+    await call.answer()
+    await safe_edit(call, f"{e('time')} Отправляю заявку №{withdrawal_id}…")
+
+    result = await approve_payout(
+        db, payer, withdrawal_id,
+        max_single_nano=config.max_payout_nano,
+        max_daily_nano=config.max_daily_payout_nano,
+    )
+    worker_id = row["user_id"] if row else 0
+
+    if result.status == "paid":
+        demo = f"\n{e('warn')} Режим DRY_RUN" if config.dry_run else ""
+        await safe_edit(
+            call,
+            f"{e('check')} <b>Выплачено по заявке №{withdrawal_id}</b>\n"
+            f"{e('profile')} Воркер · <code>{worker_id}</code>\n"
+            f"{e('coin')} <b>{fmt_ton(result.amount_nano)}</b>\n"
+            f"{e('link')} <code>{esc(result.tx_hash)}</code>{demo}",
+        )
+        await _notify(
+            call, worker_id,
+            f"{e('check')} <b>Выплата отправлена</b>\n"
+            f"{e('coin')} <b>{fmt_ton(result.amount_nano)}</b>\n"
+            f"{e('link')} <code>{esc(result.tx_hash)}</code>{demo}",
+        )
+        return
+
+    reasons = {
+        "skipped": "заявка уже закрыта — её обработали раньше",
+        "blocked": f"остановлено лимитом · {esc(result.error)}",
+        "failed": f"не прошло · {esc(result.error)}, средства возвращены",
+    }
+    await safe_edit(
+        call,
+        f"{e('cross')} <b>Заявка №{withdrawal_id} не выплачена</b>\n"
+        f"{e('dot')} {reasons.get(result.status, result.status)}",
+    )
+
+
+@router.callback_query(F.data.startswith("wrej:"))
+async def decline_withdrawal(call: CallbackQuery, db: Database, config: Config) -> None:
+    """Отклоняет заявку и возвращает сумму на баланс воркера."""
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    try:
+        withdrawal_id = int(call.data.split(":", 1)[1])
+    except ValueError:
+        await call.answer("Битая кнопка", show_alert=True)
+        return
+
+    row = await db.get_withdrawal(withdrawal_id)
+    result = await reject_payout(db, withdrawal_id, "отклонено администратором")
+    await call.answer()
+
+    if result.status == "skipped":
+        await safe_edit(
+            call,
+            f"{e('warn')} <b>Заявка №{withdrawal_id} уже закрыта</b>\n"
+            f"{e('dot')} Её обработали раньше.",
+        )
+        return
+
+    worker_id = row["user_id"] if row else 0
+    await safe_edit(
+        call,
+        f"{e('cross')} <b>Заявка №{withdrawal_id} отклонена</b>\n"
+        f"{e('profile')} Воркер · <code>{worker_id}</code>\n"
+        f"{e('check')} {fmt_ton(result.amount_nano)} возвращены на баланс.",
+    )
+    await _notify(
+        call, worker_id,
+        f"{e('cross')} <b>Заявка отклонена</b>\n"
+        f"{e('coin')} {fmt_ton(result.amount_nano)} вернулись на баланс.\n"
+        f"{e('dot')} Напиши администратору, если это ошибка.",
     )

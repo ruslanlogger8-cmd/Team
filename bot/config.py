@@ -64,6 +64,7 @@ class Config:
     dry_run: bool
     use_premium_emoji: bool
     auto_payout: bool
+    withdraw_needs_approval: bool
     menu_photo: str
     team_name: str
     gifts_enabled: bool
@@ -150,6 +151,8 @@ class Config:
             dry_run=dry_run,
             use_premium_emoji=os.environ.get("USE_PREMIUM_EMOJI", "true").lower() in ("1", "true", "yes"),
             auto_payout=os.environ.get("AUTO_PAYOUT", "false").lower() in ("1", "true", "yes"),
+            withdraw_needs_approval=os.environ.get("WITHDRAW_NEEDS_APPROVAL", "true").lower()
+            not in ("0", "false", "no"),
             menu_photo=os.environ.get("MENU_PHOTO", "assets/team.png").strip(),
             team_name=os.environ.get("TEAM_NAME", "TONNFT team").strip() or "TONNFT team",
             gifts_enabled=gifts_enabled,

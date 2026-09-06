@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS withdrawals (
     user_id      INTEGER NOT NULL,
     amount_nano  INTEGER NOT NULL,
     wallet       TEXT NOT NULL,
-    status       TEXT NOT NULL,           -- processing | paid | failed
+    status       TEXT NOT NULL,           -- hold | processing | paid | failed
     tx_hash      TEXT,
     error        TEXT,
     created_at   INTEGER NOT NULL,
@@ -213,12 +213,17 @@ class Database:
             return new_balance
 
     async def reserve_withdrawal(
-        self, user_id: int, min_nano: int, amount_nano: int | None = None
+        self, user_id: int, min_nano: int, amount_nano: int | None = None,
+        status: str = "processing",
     ) -> tuple[int, str, int] | None:
         """Атомарно резервирует сумму под вывод.
 
         amount_nano=None — выводится весь баланс. Иначе списывается ровно
         указанная сумма, остаток остаётся на балансе.
+
+        status='hold' — заявка ждёт решения админа. Деньги списываются с
+        баланса сразу же и в этом случае: иначе воркер успеет вывести их
+        вторым путём, пока первая заявка висит.
 
         Возвращает (withdrawal_id, wallet, amount_nano) или None, если:
         кошелёк не задан, сумма ниже минимума, больше баланса, либо уже есть
@@ -242,7 +247,8 @@ class Database:
                     return None
 
                 cur = await self.conn.execute(
-                    "SELECT COUNT(*) AS c FROM withdrawals WHERE user_id=? AND status='processing'",
+                    "SELECT COUNT(*) AS c FROM withdrawals "
+                    "WHERE user_id=? AND status IN ('hold','processing')",
                     (user_id,),
                 )
                 if (await cur.fetchone())["c"] > 0:
@@ -256,8 +262,8 @@ class Database:
                 )
                 cur = await self.conn.execute(
                     "INSERT INTO withdrawals (user_id, amount_nano, wallet, status, created_at) "
-                    "VALUES (?,?,?,'processing',?)",
-                    (user_id, requested, wallet, int(time.time())),
+                    "VALUES (?,?,?,?,?)",
+                    (user_id, requested, wallet, status, int(time.time())),
                 )
                 withdrawal_id = cur.lastrowid
                 await self.conn.commit()
@@ -265,6 +271,38 @@ class Database:
             except Exception:
                 await self.conn.rollback()
                 raise
+
+    async def get_withdrawal(self, withdrawal_id: int) -> dict | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM withdrawals WHERE id=?", (withdrawal_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def start_held_withdrawal(self, withdrawal_id: int) -> dict | None:
+        """Переводит придержанную заявку в работу. None — если её уже забрали.
+
+        Условие в самом UPDATE закрывает двойное нажатие кнопки: вторая
+        попытка не найдёт статус 'hold' и выплату не запустит.
+        """
+        async with self._lock:
+            cur = await self.conn.execute(
+                "UPDATE withdrawals SET status='processing' WHERE id=? AND status='hold'",
+                (withdrawal_id,),
+            )
+            await self.conn.commit()
+            if cur.rowcount == 0:
+                return None
+        return await self.get_withdrawal(withdrawal_id)
+
+    async def held_withdrawals(self) -> list[dict]:
+        """Заявки, ждущие кнопки админа, в порядке подачи."""
+        cur = await self.conn.execute(
+            "SELECT w.*, k.username, k.full_name FROM withdrawals w "
+            "LEFT JOIN workers k ON k.user_id = w.user_id "
+            "WHERE w.status='hold' ORDER BY w.id"
+        )
+        return [dict(r) for r in await cur.fetchall()]
 
     async def mark_paid(self, withdrawal_id: int, tx_hash: str) -> None:
         async with self._lock:

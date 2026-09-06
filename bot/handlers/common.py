@@ -15,9 +15,9 @@ from ..emoji import e, esc
 from ..gifts.claim import ClaimResult, parse_nft_slug, parse_username, submit_claim
 from ..keyboards import (
     back_menu, claim_menu, confirm_withdraw, history_nav, main_menu,
-    wallet_menu, withdraw_choice,
+    wallet_menu, withdraw_choice, withdrawal_actions,
 )
-from ..payout import execute_payout
+from ..payout import execute_payout, request_payout
 from ..states import ClaimForm, WalletForm, WithdrawForm
 from ..ui import reset_state, safe_edit, send_screen
 from ..utils import fmt_ton, is_valid_ton_address, parse_ton
@@ -391,6 +391,10 @@ async def withdraw_confirm(
     amount_nano = data.get("amount_nano")
     await state.clear()
 
+    if config.withdraw_needs_approval:
+        await _hold_for_admin(call, db, config, amount_nano)
+        return
+
     await safe_edit(call, f"{e('time')} <b>Отправляю перевод…</b>")
 
     result = await execute_payout(
@@ -446,6 +450,54 @@ async def withdraw_confirm(
         f"{e('link')} Транзакция\n<code>{esc(result.tx_hash)}</code>{demo}",
         back_menu(),
     )
+
+
+async def _hold_for_admin(
+    call: CallbackQuery, db: Database, config: Config, amount_nano: int | None
+) -> None:
+    """Режим ручной выплаты: заявка ждёт кнопки админа.
+
+    Деньги списываются с баланса уже сейчас — иначе воркер выведет их вторым
+    путём, пока заявка висит.
+    """
+    result = await request_payout(
+        db, call.from_user.id, config.min_withdraw_nano, amount_nano
+    )
+    if result.status == "skipped":
+        await safe_edit(
+            call,
+            f"{e('cross')} <b>Заявку не создать</b>\n"
+            f"{e('dot')} Баланс ниже минимума, не указан кошелёк "
+            f"или прошлая заявка ещё не закрыта.",
+            back_menu(),
+        )
+        return
+
+    await safe_edit(
+        call,
+        f"{e('time')} <b>Заявка отправлена</b>\n"
+        f"{e('coin')} Сумма · <b>{fmt_ton(result.amount_nano)}</b>\n"
+        f"{e('dot')} Заявка №{result.withdrawal_id}\n\n"
+        f"{e('shield')} Выплату подтверждает администратор. "
+        f"Как отправит — придёт хеш транзакции.",
+        back_menu(),
+    )
+
+    worker = await db.get_worker(call.from_user.id)
+    who = f"@{worker.username}" if worker and worker.username else str(call.from_user.id)
+    for admin_id in config.admin_ids:
+        try:
+            await call.bot.send_message(
+                admin_id,
+                f"{e('withdraw')} <b>Заявка на вывод</b>\n"
+                f"{e('dot')} Заявка №{result.withdrawal_id}\n"
+                f"{e('profile')} {esc(who)} · <code>{call.from_user.id}</code>\n"
+                f"{e('coin')} Сумма · <b>{fmt_ton(result.amount_nano)}</b>\n"
+                f"{e('wallet')} <code>{esc(worker.wallet if worker else '')}</code>",
+                reply_markup=withdrawal_actions(result.withdrawal_id),
+            )
+        except Exception:  # noqa: BLE001 — админ мог не запускать бота
+            logger.warning("Не удалось показать админу %s заявку", admin_id)
 
 
 async def _alert_admins(bot, config: Config, result, user_id: int) -> None:

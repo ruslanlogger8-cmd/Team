@@ -30,7 +30,7 @@ class Payer(Protocol):
 
 @dataclass(frozen=True)
 class PayoutResult:
-    status: Literal["paid", "failed", "skipped", "blocked"]
+    status: Literal["paid", "failed", "skipped", "blocked", "held"]
     amount_nano: int = 0
     withdrawal_id: int | None = None
     tx_hash: str | None = None
@@ -139,3 +139,90 @@ async def execute_payout(
             withdrawal_id=withdrawal_id,
             tx_hash=tx_hash,
         )
+
+
+async def request_payout(
+    db: Database,
+    user_id: int,
+    min_nano: int,
+    amount_nano: int | None = None,
+) -> PayoutResult:
+    """Придерживает вывод до нажатия кнопки админом.
+
+    Деньги списываются с баланса сразу, как и при обычной выплате: заявка,
+    висящая без резерва, позволила бы вывести ту же сумму вторым путём.
+    Отправки в сеть здесь нет — она в approve_payout.
+    """
+    async with _user_lock(user_id):
+        reserved = await db.reserve_withdrawal(user_id, min_nano, amount_nano, status="hold")
+        if reserved is None:
+            return PayoutResult(status="skipped")
+
+        withdrawal_id, _wallet, amount = reserved
+        logger.info("Заявка #%s на %s нанотон ждёт решения админа", withdrawal_id, amount)
+        return PayoutResult(status="held", amount_nano=amount, withdrawal_id=withdrawal_id)
+
+
+async def approve_payout(
+    db: Database,
+    payer: Payer,
+    withdrawal_id: int,
+    max_single_nano: int = 0,
+    max_daily_nano: int = 0,
+) -> PayoutResult:
+    """Отправляет придержанную заявку в сеть.
+
+    status='skipped' — заявку уже обработали: повторное нажатие кнопки
+    (или второй админ) не должно платить второй раз.
+    """
+    row = await db.start_held_withdrawal(withdrawal_id)
+    if row is None:
+        return PayoutResult(status="skipped", withdrawal_id=withdrawal_id)
+
+    user_id = row["user_id"]
+    amount_nano = row["amount_nano"]
+    wallet = row["wallet"]
+
+    blocked = await check_limits(db, amount_nano, max_single_nano, max_daily_nano)
+    if blocked:
+        await db.mark_failed_and_refund(
+            withdrawal_id, user_id, amount_nano, f"лимит: {blocked}"
+        )
+        logger.warning("Заявка #%s отклонена лимитом: %s", withdrawal_id, blocked)
+        return PayoutResult(
+            status="blocked", amount_nano=amount_nano,
+            withdrawal_id=withdrawal_id, error=blocked,
+        )
+
+    try:
+        tx_hash = await payer.send(wallet, amount_nano)
+    except Exception as exc:  # noqa: BLE001 — любой сбой означает возврат
+        logger.exception("Заявка #%s провалилась", withdrawal_id)
+        await db.mark_failed_and_refund(withdrawal_id, user_id, amount_nano, repr(exc))
+        return PayoutResult(
+            status="failed", amount_nano=amount_nano,
+            withdrawal_id=withdrawal_id, error=str(exc) or exc.__class__.__name__,
+        )
+
+    await db.mark_paid(withdrawal_id, tx_hash)
+    logger.info("Заявка #%s выплачена: %s → %s", withdrawal_id, amount_nano, wallet)
+    return PayoutResult(
+        status="paid", amount_nano=amount_nano,
+        withdrawal_id=withdrawal_id, tx_hash=tx_hash,
+    )
+
+
+async def reject_payout(db: Database, withdrawal_id: int, reason: str) -> PayoutResult:
+    """Отклоняет придержанную заявку и возвращает деньги на баланс."""
+    row = await db.start_held_withdrawal(withdrawal_id)
+    if row is None:
+        return PayoutResult(status="skipped", withdrawal_id=withdrawal_id)
+
+    await db.mark_failed_and_refund(
+        withdrawal_id, row["user_id"], row["amount_nano"], reason
+    )
+    logger.info("Заявка #%s отклонена: %s", withdrawal_id, reason)
+    return PayoutResult(
+        status="failed", amount_nano=row["amount_nano"],
+        withdrawal_id=withdrawal_id, error=reason,
+    )
