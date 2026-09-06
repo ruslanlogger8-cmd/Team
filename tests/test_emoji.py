@@ -66,6 +66,13 @@ class TestData:
         for key, (custom_id, _) in EMOJI.items():
             assert custom_id in known, f"{key}: id {custom_id} нет в emoji_index.json"
 
+    def test_no_playerok_pack(self):
+        """Playerok — чужой бренд, его иконки в нашем интерфейсе не место."""
+        index = json.loads(pathlib.Path("emoji_index.json").read_text("utf-8"))
+        playerok = {r["id"] for r in index if r["pack"] == "Playerok"}
+        offenders = [key for key, (cid, _) in EMOJI.items() if cid in playerok]
+        assert not offenders, f"иконки из пака Playerok: {offenders}"
+
     def test_no_duplicate_ids_for_different_meanings(self):
         seen: dict[str, str] = {}
         for key, (custom_id, _) in EMOJI.items():
