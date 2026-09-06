@@ -49,6 +49,22 @@ def _int_set(raw: str, var_name: str) -> set[int]:
     return result
 
 
+def _apply_local_settings() -> None:
+    """Подставляет вшитые значения там, где переменная окружения не задана.
+
+    Порядок именно такой: окружение важнее файла, иначе значение, заданное
+    в Railway, нельзя было бы переопределить, не трогая код.
+    """
+    try:
+        from .local_settings import SETTINGS
+    except ImportError:  # файла может не быть — тогда работаем только на env
+        return
+
+    for name, value in SETTINGS.items():
+        if str(value).strip() and not os.environ.get(name, "").strip():
+            os.environ[name] = str(value).strip()
+
+
 @dataclass(frozen=True)
 class Config:
     bot_token: str
@@ -84,6 +100,8 @@ class Config:
 
     @staticmethod
     def load() -> "Config":
+        _apply_local_settings()
+
         token = os.environ.get("BOT_TOKEN", "").strip()
         if not token:
             raise RuntimeError("BOT_TOKEN не задан в env")
