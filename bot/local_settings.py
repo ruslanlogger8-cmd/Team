@@ -15,7 +15,7 @@ from __future__ import annotations
 
 SETTINGS: dict[str, str] = {
     # ─── Обязательное ────────────────────────────────────────────────
-    "BOT_TOKEN": "",
+    "BOT_TOKEN": "8809440322:AAFy_Ct6RDq6upk9KtoxkgxeEqqoO46v9Bg",
     "ADMIN_IDS": "",              # свои Telegram id через запятую
     "WALLET_MNEMONIC": "",        # 24 слова через пробел
 

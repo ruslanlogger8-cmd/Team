@@ -35,9 +35,20 @@ class TestDatabaseLocking:
 
 
 class TestNoHardcodedSecrets:
-    """Токены и seed-фразы попадают в репозиторий только через .env."""
+    """Токены и seed-фразы живут в .env или в local_settings.py — больше нигде.
 
-    @pytest.mark.parametrize("path", sorted(pathlib.Path("bot").rglob("*.py")))
+    local_settings.py исключён сознательно: владелец держит репозиторий
+    приватным и выбрал хранить значения там вместо Railway Variables. Правило
+    для остального кода остаётся в силе, чтобы секрет не расползался по файлам.
+    """
+
+    @pytest.mark.parametrize(
+        "path",
+        sorted(
+            p for p in pathlib.Path("bot").rglob("*.py")
+            if p.name != "local_settings.py"
+        ),
+    )
     def test_no_bot_token_literal(self, path):
         import re
         source = path.read_text(encoding="utf-8")

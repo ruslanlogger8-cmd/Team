@@ -6,6 +6,10 @@ BASE = {"BOT_TOKEN": "123:abc", "ADMIN_IDS": "7712345678", "DRY_RUN": "true"}
 
 
 def load(monkeypatch, **overrides):
+    # Значения, вшитые в local_settings.py, подставились бы вместо удалённых
+    # переменных, и проверки «переменная не задана» перестали бы что-то ловить.
+    # Их поведение проверяется отдельно, в test_local_settings.py.
+    monkeypatch.setattr("bot.local_settings.SETTINGS", {})
     for key in ("BOT_TOKEN", "ADMIN_IDS", "DRY_RUN", "WALLET_MNEMONIC", "WALLET_VERSION",
                 "MIN_WITHDRAW_TON", "DB_PATH", "TON_TESTNET", "USE_PREMIUM_EMOJI"):
         monkeypatch.delenv(key, raising=False)
