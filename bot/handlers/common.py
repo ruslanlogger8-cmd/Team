@@ -21,7 +21,7 @@ from ..keyboards import (
 from ..payout import execute_payout, request_payout
 from ..states import ClaimForm, PayoutRequestForm, WalletForm, WithdrawForm
 from ..ui import reset_state, safe_edit, send_screen
-from ..utils import fmt_ton, is_valid_ton_address, parse_ton, plural
+from ..utils import fmt_ton, is_valid_ton_address, parse_ton
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -142,13 +142,10 @@ async def top(call: CallbackQuery, db: Database, state: FSMContext) -> None:
     if not rows:
         body = f"{e('dot')} Выплат пока не было."
     else:
-        lines = []
-        for place, (name, total, count) in enumerate(rows, 1):
-            times = plural(count, "выплата", "выплаты", "выплат")
-            lines.append(
-                f"<b>{place}.</b> {esc(name)} — <b>{fmt_ton(total)}</b> "
-                f"· {count} {times}"
-            )
+        lines = [
+            f"<b>{place}.</b> {esc(name)} — <b>{fmt_ton(total)}</b>"
+            for place, (name, total, _count) in enumerate(rows, 1)
+        ]
         # Цитата отделяет список от заголовка сама, без разделителей.
         body = "<blockquote>" + "\n".join(lines) + "</blockquote>"
     await safe_edit(
