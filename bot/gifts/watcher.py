@@ -11,6 +11,10 @@ from typing import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
+# Потолок страниц при перечислении подарков: страховка от курсора,
+# который сервер отдаёт бесконечно.
+MAX_GIFT_PAGES = 50
+
 
 @dataclass(frozen=True)
 class IncomingGift:
@@ -135,6 +139,7 @@ class GiftWatcher:
         me = await self._client.get_input_entity("me")
         collected: list[IncomingGift] = []
         offset = ""
+        pages = 0
 
         while True:
             result = await self._client(
@@ -152,8 +157,18 @@ class GiftWatcher:
                 if gift is not None:
                     collected.append(gift)
 
-            offset = getattr(result, "next_offset", None) or ""
-            if not offset or not result.gifts:
+            next_offset = getattr(result, "next_offset", None) or ""
+            # Курсор, не сдвинувшийся с места, означает ту же страницу ещё раз:
+            # без этой проверки цикл крутится вечно и множит дубликаты.
+            if not next_offset or next_offset == offset or not result.gifts:
+                break
+            offset = next_offset
+            pages += 1
+            if pages >= MAX_GIFT_PAGES:
+                logger.warning(
+                    "Остановил перебор подарков на %s странице — похоже, "
+                    "курсор не заканчивается", pages,
+                )
                 break
 
         logger.info("На аккаунте найдено уникальных подарков: %s", len(collected))

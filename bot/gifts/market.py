@@ -40,6 +40,23 @@ def _str(value) -> str:
     return str(value) if value else ""
 
 
+def _gifts_of(result) -> list:
+    """Достаёт список подарков из ответа amrkt.
+
+    get_inventory и search_gifts возвращают модель GiftList, а не список.
+    Проходить по ней напрямую нельзя: pydantic отдаёт пары (поле, значение),
+    и каждый «подарок» вышел бы пустым — инвентарь молча выглядел бы
+    пустым, и на продажу не встало бы ничего.
+    """
+    if result is None:
+        return []
+    for attr in ("items", "gifts"):
+        value = getattr(result, attr, None)
+        if isinstance(value, list):
+            return value
+    return result if isinstance(result, list) else []
+
+
 class Market:
     """Тонкий слой над MarketClient. Импорт ленивый: без GIFTS_ENABLED
     зависимость не нужна."""
@@ -92,8 +109,8 @@ class Market:
         )
 
     async def inventory(self) -> list[InventoryItem]:
-        gifts = await self._client.get_inventory()
-        return [self.to_item(g) for g in (gifts or [])]
+        result = await self._client.get_inventory()
+        return [self.to_item(g) for g in _gifts_of(result)]
 
     async def cheapest_comparable_nano(self, item: InventoryItem) -> int:
         """Запасной способ узнать флор: ищем самый дешёвый лот с той же
@@ -114,8 +131,7 @@ class Market:
             logger.warning("Поиск сопоставимых лотов не удался: %s", exc)
             return 0
 
-        gifts = getattr(found, "gifts", None) or getattr(found, "items", None) or []
-        prices = [_int(getattr(g, "sale_price", 0)) for g in gifts]
+        prices = [_int(getattr(g, "sale_price", 0)) for g in _gifts_of(found)]
         prices = [p for p in prices if p > 0]
         return min(prices) if prices else 0
 

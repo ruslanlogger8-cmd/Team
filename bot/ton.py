@@ -262,9 +262,14 @@ class TonPayer:
             ) from None
 
     async def balance_nano(self) -> int:
-        """Остаток на горячем кошельке — для проверки перед выплатами."""
+        """Остаток на горячем кошельке — для проверки перед выплатами.
+
+        balance у tonutils — обычное свойство, а не корутина: await по нему
+        падает с TypeError. Значение обновляет refresh().
+        """
         await self._ensure_connected()
-        return int(await self._wallet.balance)
+        await self._wallet.refresh()
+        return int(self._wallet.balance or 0)
 
     async def close(self) -> None:
         if self._connected:
