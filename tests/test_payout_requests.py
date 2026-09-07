@@ -204,3 +204,30 @@ async def test_reopen_refuses_a_rejected_request(db, wallet):
     await db.finish_payout_request(request_id, "rejected", note="отказ")
 
     assert await db.reopen_payout_request(request_id) is None
+
+
+@pytest.mark.asyncio
+async def test_settle_closes_a_request_paid_outside_the_bot(db, wallet):
+    """После сбоя перевод мог уйти — заявку надо закрыть, а не платить снова."""
+    await _worker(db)
+    request_id = await db.add_payout_request(100, wallet, None)
+    await db.take_payout_request(request_id)
+    await db.finish_payout_request(request_id, "failed", NANO, NANO, note="таймаут")
+
+    row = await db.settle_payout_request(request_id, 2 * NANO, "hash-x")
+
+    assert row["status"] == "paid"
+    assert row["share_nano"] == 2 * NANO
+    assert row["tx_hash"] == "hash-x"
+    assert await db.pending_payout_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_settle_refuses_an_already_paid_request(db, wallet):
+    await _worker(db)
+    request_id = await db.add_payout_request(100, wallet, None)
+    await db.take_payout_request(request_id)
+    await db.finish_payout_request(request_id, "paid", NANO, NANO, "hash-1")
+
+    assert await db.settle_payout_request(request_id, NANO, "hash-2") is None
+    assert (await db.get_payout_request(request_id))["tx_hash"] == "hash-1"

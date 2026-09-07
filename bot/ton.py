@@ -211,7 +211,14 @@ class TonPayer:
         return await self._send_once(destination, amount_nano)
 
     async def _send_once(self, destination: str, amount_nano: int) -> str:
-        """Одна попытка отправки с номером, прочитанным у контракта."""
+        """Одна попытка отправки с номером, прочитанным у контракта.
+
+        transfer() у tonutils САМ отправляет сообщение в сеть — это не сборка,
+        а полноценная отправка. Своего send_message здесь быть не должно:
+        второй такой вызов шлёт то же сообщение повторно, сеть применяет
+        первое, номер сдвигается, и дубль отлетает с exitcode=33. Деньги при
+        этом уходят, а бот сообщает об ошибке.
+        """
         params = None
         seqno = await self._read_seqno()
         if seqno is not None:
@@ -223,7 +230,6 @@ class TonPayer:
             body=self._comment,
             params=params,
         )
-        await self._client.send_message(message.as_b64)
 
         tx_hash = message.normalized_hash
         if isinstance(tx_hash, (bytes, bytearray)):

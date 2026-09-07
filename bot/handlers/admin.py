@@ -1260,3 +1260,53 @@ async def repay_command(message: Message, db: Database, config: Config) -> None:
         f"{e('wallet')} <code>{esc(row['wallet'])}</code>",
         reply_markup=request_decision(request_id),
     )
+
+
+@router.message(Command("paid"))
+async def paid_command(message: Message, db: Database, config: Config) -> None:
+    """/paid НОМЕР СУММА [хеш] — закрыть заявку, деньги по которой уже ушли.
+
+    Нужна, когда перевод состоялся, а бот записал отказ. Без неё заявка висит
+    в очереди и провоцирует заплатить второй раз. Сумму вводим руками: бот
+    этого перевода не видел и подставить её сам не может.
+    """
+    if not _is_admin(message.from_user.id, config):
+        return
+
+    parts = (message.text or "").split(maxsplit=3)
+    if len(parts) < 3 or not parts[1].isdigit():
+        await message.answer(
+            f"{e('warn')} <b>Формат команды</b>\n"
+            f"<code>/paid НОМЕР СУММА [хеш]</code>\n\n"
+            f"{e('dot')} Пример · <code>/paid 3 2.96</code>\n"
+            f"{e('shield')} Только когда перевод виден в блокчейне."
+        )
+        return
+
+    request_id = int(parts[1])
+    try:
+        share_nano = parse_ton(parts[2])
+    except ValueError:
+        await message.answer(f"{e('cross')} Сумма должна быть числом · <code>2.96</code>")
+        return
+
+    tx_hash = parts[3].strip() if len(parts) > 3 else "подтверждено вручную"
+    row = await db.settle_payout_request(request_id, share_nano, tx_hash)
+    if row is None:
+        current = await db.get_payout_request(request_id)
+        state = current["status"] if current else "не найдена"
+        await message.answer(
+            f"{e('cross')} <b>Заявка №{request_id} не закрыта</b>\n"
+            f"{e('dot')} Статус · <b>{esc(state)}</b>"
+        )
+        return
+
+    # Та же запись, что и при обычной выплате: иначе выплата не попадёт
+    # ни в историю воркера, ни в топ, ни в суточный лимит.
+    await db.record_direct_payout(row["worker_id"], share_nano, row["wallet"], tx_hash)
+    await message.answer(
+        f"{e('check')} <b>Заявка №{request_id} закрыта</b>\n"
+        f"{e('profile')} Воркер · <code>{row['worker_id']}</code>\n"
+        f"{e('coin')} <b>{fmt_ton(share_nano)}</b>\n"
+        f"{e('dot')} Учтено в истории и топе."
+    )

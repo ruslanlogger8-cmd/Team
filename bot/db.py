@@ -352,6 +352,27 @@ class Database:
             )
             await self.conn.commit()
 
+    async def settle_payout_request(
+        self, request_id: int, share_nano: int, tx_hash: str
+    ) -> dict | None:
+        """Закрывает заявку, деньги по которой ушли мимо учёта бота.
+
+        Нужно после сбоя, когда перевод состоялся, а бот записал отказ:
+        заявка иначе висит в очереди и приглашает заплатить второй раз.
+        Закрываем только незавершённые — 'paid' трогать нельзя.
+        """
+        async with self._lock:
+            cur = await self.conn.execute(
+                "UPDATE payout_requests SET status='paid', share_nano=?, tx_hash=?, "
+                "note=?, resolved_at=? WHERE id=? AND status IN ('pending','processing','failed')",
+                (share_nano, tx_hash, "закрыта вручную: перевод подтверждён в блокчейне",
+                 int(time.time()), request_id),
+            )
+            await self.conn.commit()
+            if cur.rowcount == 0:
+                return None
+        return await self.get_payout_request(request_id)
+
     async def reopen_payout_request(self, request_id: int) -> dict | None:
         """Возвращает в очередь заявку, закрытую с неизвестным исходом.
 

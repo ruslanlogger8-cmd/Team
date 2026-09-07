@@ -14,7 +14,8 @@ class FakeMessage:
 class FakeWallet:
     """Кошелёк, который отвергает всё, кроме своего текущего номера."""
 
-    def __init__(self, chain_seqno: int = 7, uninit: bool = False) -> None:
+    def __init__(self, chain_seqno: int = 7, uninit: bool = False, client=None) -> None:
+        self.client = client
         self.chain_seqno = chain_seqno
         self.is_uninit = uninit
         self.balance = 5_000_000_000
@@ -34,7 +35,10 @@ class FakeWallet:
         return self.chain_seqno
 
     async def transfer(self, destination, amount, body, params):
-        self.sent_with.append(None if params is None else params.get("seqno"))
+        """Как в tonutils: transfer() и собирает, и отправляет сообщение."""
+        seqno = None if params is None else params.get("seqno")
+        self.sent_with.append(seqno)
+        await self.client.send_message("boc")
         return FakeMessage()
 
 
@@ -57,6 +61,7 @@ class FakeClient:
 
 
 def _payer(wallet: FakeWallet, client: FakeClient) -> TonPayer:
+    wallet.client = client
     payer = TonPayer.__new__(TonPayer)
     payer._wallet = wallet
     payer._client = client
@@ -126,3 +131,14 @@ async def test_undeployed_wallet_sends_without_seqno():
 
     assert await _payer(wallet, client).send("EQdest", 1_000_000_000) == "hash-1"
     assert wallet.sent_with == [None]
+
+
+@pytest.mark.asyncio
+async def test_message_is_sent_exactly_once():
+    """tonutils отправляет внутри transfer(). Второй send — дубль, который
+    сеть отвергнет по seqno уже после того, как деньги ушли."""
+    wallet, client = FakeWallet(), FakeClient()
+
+    await _payer(wallet, client).send("EQdest", 1_000_000_000)
+
+    assert client.sends == 1
