@@ -7,7 +7,9 @@ transfer() не отправляет транзакцию, а собирает �
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 import secrets
 
 from .config import Config
@@ -19,6 +21,9 @@ logger = logging.getLogger(__name__)
 # с запасом: лучше отказать заранее с понятным текстом, чем поймать отказ
 # от ноды посреди выплаты.
 GAS_RESERVE_NANO = 50_000_000  # 0.05 TON
+# Пауза перед повтором: даём сети принять предыдущую транзакцию,
+# иначе перечитаем тот же устаревший номер.
+SEQNO_RETRY_DELAY_SEC = 3
 
 
 class DryRunPayer:
@@ -34,6 +39,15 @@ class DryRunPayer:
             fmt_ton(amount_nano), destination, fake_hash,
         )
         return fake_hash
+
+
+# exitcode=33 у кошельков v3–v5 означает ровно одно: присланный seqno не
+# совпал со счётчиком контракта. Сообщение при этом не исполнилось.
+_SEQNO_MISMATCH = re.compile(r"exitcode\s*=\s*33\b")
+
+
+def _is_seqno_mismatch(exc: Exception) -> bool:
+    return bool(_SEQNO_MISMATCH.search(str(exc)))
 
 
 def _wallet_classes() -> dict:
@@ -178,20 +192,29 @@ class TonPayer:
         else:
             logger.info("Баланс кошелька: %s, выплата %s", fmt_ton(balance), fmt_ton(amount_nano))
 
-        # seqno берём прямым get-методом у контракта, а не из разобранного
-        # состояния: если состояние прочиталось как неактивное, библиотека
-        # подставит seqno=0, контракт сравнит со своим и отвергнет платёж
-        # с exitcode=33. Разворачивание кошелька tonutils делает сам.
-        params = None
+        # Отправку делаем через отдельный метод: при отказе по seqno её нужно
+        # повторить со свежим номером, и повтор здесь безопасен — внешнее
+        # сообщение, отвергнутое контрактом, не исполнилось и денег не сдвинуло.
         try:
-            chain_seqno = await self._wallet.seqno()
-            params = self._wallet._params_model(seqno=chain_seqno)
-            logger.info("seqno из контракта: %s", chain_seqno)
-        except Exception as exc:  # noqa: BLE001 — у неразвёрнутого нет get-методов
-            logger.info(
-                "seqno не прочитан (%s) — считаю кошелёк неразвёрнутым, "
-                "первая транзакция задеплоит контракт", exc,
+            return await self._send_once(destination, amount_nano)
+        except Exception as exc:  # noqa: BLE001 — разбираем причину ниже
+            if not _is_seqno_mismatch(exc):
+                raise
+            logger.warning(
+                "Контракт отверг платёж по seqno (exitcode=33) — номер устарел "
+                "между чтением и отправкой. Перечитываю и пробую ещё раз."
             )
+
+        await asyncio.sleep(SEQNO_RETRY_DELAY_SEC)
+        await self._wallet.refresh()
+        return await self._send_once(destination, amount_nano)
+
+    async def _send_once(self, destination: str, amount_nano: int) -> str:
+        """Одна попытка отправки с номером, прочитанным у контракта."""
+        params = None
+        seqno = await self._read_seqno()
+        if seqno is not None:
+            params = self._wallet._params_model(seqno=seqno)
 
         message = await self._wallet.transfer(
             destination=destination,
@@ -205,6 +228,31 @@ class TonPayer:
         if isinstance(tx_hash, (bytes, bytearray)):
             tx_hash = tx_hash.hex()
         return str(tx_hash)
+
+    async def _read_seqno(self) -> int | None:
+        """Номер из get-метода контракта. None — кошелёк ещё не развёрнут.
+
+        Библиотека подставляет seqno=0, когда состояние не разобралось как
+        активное. Для развёрнутого кошелька это гарантированный отказ с
+        exitcode=33, поэтому здесь молчаливого нуля быть не должно: у живого
+        контракта номер либо читается, либо это ошибка с понятным текстом.
+        """
+        try:
+            seqno = await self._wallet.seqno()
+            logger.info("seqno из контракта: %s", seqno)
+            return int(seqno)
+        except Exception as exc:  # noqa: BLE001 — у неразвёрнутого нет get-методов
+            if bool(self._wallet.is_uninit):
+                logger.info(
+                    "seqno не прочитан (%s) — кошелёк не развёрнут, "
+                    "первая транзакция задеплоит контракт", exc,
+                )
+                return None
+            raise RuntimeError(
+                f"не удалось прочитать seqno у развёрнутого кошелька {self.address} "
+                f"({exc}). Отправлять с нулевым номером нельзя — контракт "
+                f"отвергнет платёж. Похоже на сбой toncenter, попробуй ещё раз."
+            ) from None
 
     async def balance_nano(self) -> int:
         """Остаток на горячем кошельке — для проверки перед выплатами."""
