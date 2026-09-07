@@ -207,3 +207,14 @@ def worker_actions(worker_id: int) -> InlineKeyboardMarkup:
             [btn("К списку", "a:workers", PRIMARY, "back")],
         ]
     )
+
+
+def gifts_count_choice() -> InlineKeyboardMarkup:
+    """Первый шаг заявки: один подарок или несколько."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [btn("Один подарок", "pr:one", SUCCESS, "gift")],
+            [btn("Несколько", "pr:many", PRIMARY, "gift")],
+            [btn("В меню", "m:main", PRIMARY, "back")],
+        ]
+    )

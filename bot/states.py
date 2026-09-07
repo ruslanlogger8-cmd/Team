@@ -21,8 +21,9 @@ class WithdrawForm(StatesGroup):
 
 
 class PayoutRequestForm(StatesGroup):
-    """Заявка воркера: скриншот передачи и адрес для выплаты."""
+    """Заявка воркера: количество подарков, скриншот передачи и адрес."""
 
+    waiting_count = State()
     waiting_photo = State()
     waiting_wallet = State()
 

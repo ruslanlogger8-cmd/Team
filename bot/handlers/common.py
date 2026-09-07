@@ -14,9 +14,9 @@ from ..db import Database
 from ..emoji import e, esc
 from ..gifts.claim import ClaimResult, parse_nft_slug, parse_username, submit_claim
 from ..keyboards import (
-    back_menu, claim_menu, confirm_withdraw, history_nav, main_menu,
-    payout_request_menu, request_decision, wallet_choice, wallet_menu,
-    withdraw_choice, withdrawal_actions,
+    back_menu, claim_menu, confirm_withdraw, gifts_count_choice, history_nav,
+    main_menu, payout_request_menu, request_decision, wallet_choice,
+    wallet_menu, withdraw_choice, withdrawal_actions,
 )
 from ..payout import execute_payout, request_payout
 from ..states import ClaimForm, PayoutRequestForm, WalletForm, WithdrawForm
@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 PER_PAGE = 5
+# Потолок на количество подарков в одной заявке: защита от опечатки вроде
+# «100» и от бессмысленно раздутых заявок.
+MAX_GIFTS_PER_REQUEST = 50
 MEDALS = ("gold", "silver", "bronze")
 STATUS = {
     "paid": ("check", "выплачено"),
@@ -824,16 +827,67 @@ async def payout_request_start(
         await call.answer("Одна заявка уже на рассмотрении", show_alert=True)
         return
 
-    await state.set_state(PayoutRequestForm.waiting_photo)
+    await state.set_state(PayoutRequestForm.waiting_count)
     await safe_edit(
         call,
-        f"{e('gift')} <b>Скриншот передачи</b>\n"
-        f"{e('dot')} Шаг 1 из 2\n"
-        f"{e('dot')} Пришли фото, где видно, что подарок передан менеджеру.\n\n"
-        f"{e('warn')} Именно фото, не файлом — иначе не приложится к заявке.",
+        f"{e('gift')} <b>Сколько подарков</b>\n"
+        f"{e('dot')} Шаг 1 из 3\n"
+        f"{e('dot')} На сколько подарков подаёшь заявку?\n\n"
+        f"{e('shield')} Заявка одна на все — выплата придёт одной суммой.",
+        gifts_count_choice(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "pr:one")
+async def payout_request_one(call: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(gifts_count=1)
+    await _ask_for_photo(call, state, count=1)
+    await call.answer()
+
+
+@router.callback_query(F.data == "pr:many")
+async def payout_request_many(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PayoutRequestForm.waiting_count)
+    await safe_edit(
+        call,
+        f"{e('gift')} <b>Сколько именно</b>\n"
+        f"{e('dot')} Пришли число · <code>3</code>\n\n"
+        f"{e('shield')} Столько подарков ты передал менеджеру по этой заявке.",
         back_menu(),
     )
     await call.answer()
+
+
+@router.message(PayoutRequestForm.waiting_count, F.text)
+async def payout_request_count(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    if not raw.isdigit() or not 1 <= int(raw) <= MAX_GIFTS_PER_REQUEST:
+        await message.answer(
+            f"{e('cross')} <b>Это не количество</b>\n"
+            f"{e('dot')} Пришли число от 1 до {MAX_GIFTS_PER_REQUEST} · <code>3</code>"
+        )
+        return
+
+    count = int(raw)
+    await state.update_data(gifts_count=count)
+    await _ask_for_photo(message, state, count=count)
+
+
+async def _ask_for_photo(target, state: FSMContext, count: int) -> None:
+    """Шаг со скриншотом. Экран одинаков и после кнопки, и после числа."""
+    await state.set_state(PayoutRequestForm.waiting_photo)
+    text = (
+        f"{e('gift')} <b>Скриншот передачи</b>\n"
+        f"{e('dot')} Шаг 2 из 3\n"
+        f"{e('dot')} Подарков в заявке · <b>{count}</b>\n"
+        f"{e('dot')} Пришли фото, где видно, что подарки переданы менеджеру.\n\n"
+        f"{e('warn')} Именно фото, не файлом — иначе не приложится к заявке."
+    )
+    if isinstance(target, CallbackQuery):
+        await safe_edit(target, text, back_menu())
+    else:
+        await target.answer(text, reply_markup=back_menu())
 
 
 @router.message(PayoutRequestForm.waiting_photo, F.photo)
@@ -848,7 +902,7 @@ async def payout_request_photo(
         await state.set_state(None)
         await message.answer(
             f"{e('wallet')} <b>Куда отправить</b>\n"
-            f"{e('dot')} Шаг 2 из 2\n"
+            f"{e('dot')} Шаг 3 из 3\n"
             f"{e('dot')} Сохранённый адрес\n<code>{esc(worker.wallet)}</code>",
             reply_markup=wallet_choice(worker.wallet),
         )
@@ -857,7 +911,7 @@ async def payout_request_photo(
     await state.set_state(PayoutRequestForm.waiting_wallet)
     await message.answer(
         f"{e('wallet')} <b>Адрес для выплаты</b>\n"
-        f"{e('dot')} Шаг 2 из 2\n"
+        f"{e('dot')} Шаг 3 из 3\n"
         f"{e('dot')} Пришли адрес TON одним сообщением.\n"
         f"{e('dot')} Начинается с <code>UQ</code> или <code>EQ</code>, 48 символов."
     )
@@ -900,6 +954,7 @@ async def payout_request_saved_wallet(
     await _submit_payout_request(
         call.message, call.from_user, db, config, state,
         wallet=worker.wallet, photo_id=data.get("photo_id"),
+        gifts_count=data.get("gifts_count", 1),
     )
     await call.answer()
 
@@ -922,12 +977,13 @@ async def payout_request_wallet(
     await _submit_payout_request(
         message, message.from_user, db, config, state,
         wallet=address, photo_id=data.get("photo_id"),
+        gifts_count=data.get("gifts_count", 1),
     )
 
 
 async def _submit_payout_request(
     target: Message, user, db: Database, config: Config, state: FSMContext,
-    wallet: str, photo_id: str | None,
+    wallet: str, photo_id: str | None, gifts_count: int = 1,
 ) -> None:
     """Создаёт заявку и показывает её админам с кнопками решения."""
     await state.clear()
@@ -940,11 +996,12 @@ async def _submit_payout_request(
         )
         return
 
-    request_id = await db.add_payout_request(user.id, wallet, photo_id)
+    request_id = await db.add_payout_request(user.id, wallet, photo_id, gifts_count)
 
     await target.answer(
         f"{e('check')} <b>Заявка отправлена</b>\n"
         f"{e('dot')} Заявка №{request_id}\n"
+        f"{e('gift')} Подарков · <b>{gifts_count}</b>\n"
         f"{e('wallet')} <code>{esc(wallet)}</code>\n\n"
         f"{e('time')} Администратор проверит и отправит "
         f"{config.worker_share_percent}% от суммы продажи.",
@@ -956,6 +1013,7 @@ async def _submit_payout_request(
         f"{e('withdraw')} <b>Заявка на выплату</b>\n"
         f"{e('dot')} Заявка №{request_id}\n"
         f"{e('profile')} {esc(who)} · <code>{user.id}</code>\n"
+        f"{e('gift')} Подарков · <b>{gifts_count}</b>\n"
         f"{e('wallet')} <code>{esc(wallet)}</code>"
     )
     keyboard = request_decision(request_id)

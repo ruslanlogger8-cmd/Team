@@ -789,10 +789,15 @@ async def request_accept(
     await state.set_state(ApproveForm.waiting_sale)
     await state.update_data(request_id=request_id)
     await call.answer()
+    count = row["gifts_count"]
+    head = "За сколько продан подарок" if count == 1 else "За сколько проданы подарки"
+    total = "" if count == 1 else f"{e('dot')} Сумму пиши общую за все {count}\n"
     await call.message.answer(
-        f"{e('coin')} <b>За сколько продан подарок</b>\n"
+        f"{e('coin')} <b>{head}</b>\n"
         f"{e('dot')} Заявка №{request_id}\n"
-        f"{e('profile')} Воркер · <code>{row['worker_id']}</code>\n\n"
+        f"{e('profile')} Воркер · <code>{row['worker_id']}</code>\n"
+        f"{e('gift')} Подарков · <b>{count}</b>\n\n"
+        f"{total}"
         f"{e('dot')} Пришли сумму продажи в TON · <code>12.5</code>\n"
         f"{e('star')} Воркеру уйдёт {config.worker_share_percent}% от неё."
     )
@@ -842,7 +847,8 @@ async def request_sale_amount(
         f"{e('withdraw')} <b>Проверь перед отправкой</b>\n"
         f"{e('dot')} Заявка №{request_id}\n"
         f"{e('profile')} Воркер · <code>{row['worker_id']}</code>\n"
-        f"{e('coin')} Продан за · <b>{fmt_ton(sale_nano)}</b>\n"
+        f"{e('gift')} Подарков · <b>{row['gifts_count']}</b>\n"
+        f"{e('coin')} Продано за · <b>{fmt_ton(sale_nano)}</b>\n"
         f"{e('star')} Доля {config.worker_share_percent}% · <b>{fmt_ton(share_nano)}</b>\n"
         f"{e('wallet')} <code>{esc(row['wallet'])}</code>",
         reply_markup=confirm_share(request_id),
@@ -990,6 +996,7 @@ async def requests_command(message: Message, db: Database, config: Config) -> No
         caption = (
             f"{e('withdraw')} <b>Заявка №{row['id']}</b>\n"
             f"{e('profile')} {esc(who)} · <code>{row['worker_id']}</code>\n"
+            f"{e('gift')} Подарков · <b>{row['gifts_count']}</b>\n"
             f"{e('wallet')} <code>{esc(row['wallet'])}</code>"
         )
         if row["photo_id"]:
@@ -1174,6 +1181,7 @@ async def admin_requests_screen(
         caption = (
             f"{e('withdraw')} <b>Заявка №{row['id']}</b>\n"
             f"{e('profile')} {esc(who)} · <code>{row['worker_id']}</code>\n"
+            f"{e('gift')} Подарков · <b>{row['gifts_count']}</b>\n"
             f"{e('wallet')} <code>{esc(row['wallet'])}</code>"
         )
         if row["photo_id"]:

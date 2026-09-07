@@ -133,3 +133,29 @@ async def test_workers_are_listed_for_buttons(db):
     rows = await db.all_workers()
 
     assert [worker_id for worker_id, _, _ in rows] == [200, 100]
+
+
+@pytest.mark.asyncio
+async def test_request_remembers_how_many_gifts(db, wallet):
+    await _worker(db)
+    request_id = await db.add_payout_request(100, wallet, "photo-1", gifts_count=3)
+
+    assert (await db.get_payout_request(request_id))["gifts_count"] == 3
+    assert (await db.pending_payout_requests())[0]["gifts_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_single_gift_is_the_default(db, wallet):
+    await _worker(db)
+    request_id = await db.add_payout_request(100, wallet, None)
+
+    assert (await db.get_payout_request(request_id))["gifts_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_zero_is_stored_as_one(db, wallet):
+    """Ноль подарков — бессмыслица, а нулём легко испортить подсчёт."""
+    await _worker(db)
+    request_id = await db.add_payout_request(100, wallet, None, gifts_count=0)
+
+    assert (await db.get_payout_request(request_id))["gifts_count"] == 1

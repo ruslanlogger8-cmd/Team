@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS payout_requests (
     worker_id   INTEGER NOT NULL,
     wallet      TEXT NOT NULL,           -- куда платить, воркер указывает в заявке
     photo_id    TEXT,                    -- скриншот передачи подарка
+    gifts_count INTEGER NOT NULL DEFAULT 1,   -- сколько подарков в заявке
     status      TEXT NOT NULL,           -- pending | processing | paid | rejected | failed
     sale_nano   INTEGER NOT NULL DEFAULT 0,   -- за сколько продан, вводит админ
     share_nano  INTEGER NOT NULL DEFAULT 0,   -- доля воркера от этой суммы
@@ -156,6 +157,14 @@ class Database:
         if gift_columns and "sender_id" not in gift_columns:
             await self._conn.execute("ALTER TABLE gifts ADD COLUMN sender_id INTEGER")
             logger.info("Схема: добавлена колонка gifts.sender_id")
+
+        cur = await self._conn.execute("PRAGMA table_info(payout_requests)")
+        payout_columns = {row["name"] for row in await cur.fetchall()}
+        if payout_columns and "gifts_count" not in payout_columns:
+            await self._conn.execute(
+                "ALTER TABLE payout_requests ADD COLUMN gifts_count INTEGER NOT NULL DEFAULT 1"
+            )
+            logger.info("Схема: добавлена колонка payout_requests.gifts_count")
 
         cur = await self._conn.execute("PRAGMA table_info(claim_requests)")
         existing = {row["name"] for row in await cur.fetchall()}
@@ -289,13 +298,14 @@ class Database:
     # ─── Заявки на выплату (фото + адрес, решение по кнопке) ──────────
 
     async def add_payout_request(
-        self, worker_id: int, wallet: str, photo_id: str | None
+        self, worker_id: int, wallet: str, photo_id: str | None, gifts_count: int = 1
     ) -> int:
         async with self._lock:
             cur = await self.conn.execute(
-                "INSERT INTO payout_requests (worker_id, wallet, photo_id, status, created_at) "
-                "VALUES (?,?,?,'pending',?)",
-                (worker_id, wallet, photo_id, int(time.time())),
+                "INSERT INTO payout_requests "
+                "(worker_id, wallet, photo_id, gifts_count, status, created_at) "
+                "VALUES (?,?,?,?,'pending',?)",
+                (worker_id, wallet, photo_id, max(1, gifts_count), int(time.time())),
             )
             await self.conn.commit()
             return cur.lastrowid
