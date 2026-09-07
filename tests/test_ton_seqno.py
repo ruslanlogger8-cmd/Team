@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from bot.ton import TonPayer, _is_seqno_mismatch
+from bot.ton import TonPayer, is_seqno_mismatch
 
 
 class FakeMessage:
@@ -67,9 +67,9 @@ def _payer(wallet: FakeWallet, client: FakeClient) -> TonPayer:
 
 
 def test_detects_only_the_seqno_exit_code():
-    assert _is_seqno_mismatch(RuntimeError("exitcode=33, steps=23"))
-    assert not _is_seqno_mismatch(RuntimeError("exitcode=34"))
-    assert not _is_seqno_mismatch(RuntimeError("exitcode=333"))
+    assert is_seqno_mismatch(RuntimeError("exitcode=33, steps=23"))
+    assert not is_seqno_mismatch(RuntimeError("exitcode=34"))
+    assert not is_seqno_mismatch(RuntimeError("exitcode=333"))
 
 
 @pytest.mark.asyncio

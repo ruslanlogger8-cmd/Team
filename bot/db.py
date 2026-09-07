@@ -352,6 +352,23 @@ class Database:
             )
             await self.conn.commit()
 
+    async def reopen_payout_request(self, request_id: int) -> dict | None:
+        """Возвращает в очередь заявку, закрытую с неизвестным исходом.
+
+        Только из 'failed': заявку, по которой перевод подтверждён, повторно
+        открывать нельзя — это и был бы двойной платёж.
+        """
+        async with self._lock:
+            cur = await self.conn.execute(
+                "UPDATE payout_requests SET status='pending', note=?, resolved_at=NULL "
+                "WHERE id=? AND status='failed'",
+                ("возвращена вручную после проверки в блокчейне", request_id),
+            )
+            await self.conn.commit()
+            if cur.rowcount == 0:
+                return None
+        return await self.get_payout_request(request_id)
+
     async def finish_payout_request(
         self, request_id: int, status: str, sale_nano: int = 0,
         share_nano: int = 0, tx_hash: str | None = None, note: str = "",

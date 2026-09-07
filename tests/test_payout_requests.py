@@ -159,3 +159,48 @@ async def test_zero_is_stored_as_one(db, wallet):
     request_id = await db.add_payout_request(100, wallet, None, gifts_count=0)
 
     assert (await db.get_payout_request(request_id))["gifts_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_outcome_stays_closed_until_checked(db, wallet):
+    """Заявка с неясным исходом не должна выплачиваться одним нажатием."""
+    await _worker(db)
+    request_id = await db.add_payout_request(100, wallet, None)
+    await db.take_payout_request(request_id)
+    await db.finish_payout_request(request_id, "failed", NANO, NANO, note="таймаут")
+
+    assert await db.take_payout_request(request_id) is None
+    assert await db.pending_payout_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_reopen_returns_a_failed_request(db, wallet):
+    await _worker(db)
+    request_id = await db.add_payout_request(100, wallet, None)
+    await db.take_payout_request(request_id)
+    await db.finish_payout_request(request_id, "failed", NANO, NANO, note="таймаут")
+
+    assert await db.reopen_payout_request(request_id) is not None
+    assert (await db.get_payout_request(request_id))["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_reopen_refuses_a_paid_request(db, wallet):
+    """Открыть выплаченную заявку — это и есть двойной платёж."""
+    await _worker(db)
+    request_id = await db.add_payout_request(100, wallet, None)
+    await db.take_payout_request(request_id)
+    await db.finish_payout_request(request_id, "paid", NANO, NANO, "hash-1")
+
+    assert await db.reopen_payout_request(request_id) is None
+    assert (await db.get_payout_request(request_id))["status"] == "paid"
+
+
+@pytest.mark.asyncio
+async def test_reopen_refuses_a_rejected_request(db, wallet):
+    await _worker(db)
+    request_id = await db.add_payout_request(100, wallet, None)
+    await db.take_payout_request(request_id)
+    await db.finish_payout_request(request_id, "rejected", note="отказ")
+
+    assert await db.reopen_payout_request(request_id) is None

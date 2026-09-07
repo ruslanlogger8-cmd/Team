@@ -18,6 +18,7 @@ from ..keyboards import (
 )
 from ..payout import approve_payout, check_limits, execute_payout, reject_payout
 from ..states import ApproveForm, CreditForm
+from ..ton import is_seqno_mismatch
 from ..ui import safe_edit
 from ..utils import fmt_ton, parse_ton
 
@@ -894,13 +895,39 @@ async def request_pay(
     try:
         tx_hash = await payer.send(row["wallet"], share_nano)
     except Exception as exc:  # noqa: BLE001 — заявка обязана пережить сбой сети
-        await db.release_payout_request(request_id)
+        reason = str(exc) or exc.__class__.__name__
+
+        # Возвращать заявку в очередь можно, только если точно известно, что
+        # перевод не исполнился. Контракт, отвергнувший сообщение, — как раз
+        # такой случай. Всё остальное (таймаут, разрыв, невнятный ответ ноды)
+        # неотличимо от «ушло, но ответ потерялся»: одно нажатие кнопки после
+        # такого отправило бы деньги второй раз.
+        if is_seqno_mismatch(exc):
+            await db.release_payout_request(request_id)
+            await safe_edit(
+                call,
+                f"{e('cross')} <b>Перевод не прошёл</b>\n"
+                f"{e('dot')} {esc(reason)}\n"
+                f"{e('check')} Контракт отверг сообщение — деньги не списаны.\n"
+                f"{e('dot')} Заявка №{request_id} вернулась в очередь.",
+            )
+            return
+
+        await db.finish_payout_request(
+            request_id, "failed", sale_nano, share_nano, note=reason[:300]
+        )
         await safe_edit(
             call,
-            f"{e('cross')} <b>Перевод не прошёл</b>\n"
-            f"{e('dot')} {esc(str(exc) or exc.__class__.__name__)}\n"
-            f"{e('check')} Заявка №{request_id} вернулась в очередь, "
-            f"деньги не списаны.",
+            f"{e('warn')} <b>Исход неизвестен</b>\n"
+            f"{e('dot')} Заявка №{request_id}\n"
+            f"{e('coin')} <b>{fmt_ton(share_nano)}</b>\n"
+            f"{e('wallet')} <code>{esc(row['wallet'])}</code>\n"
+            f"{e('cross')} {esc(reason)}\n\n"
+            f"{e('shield')} Ответа от сети нет — перевод мог и уйти. "
+            f"Проверь кошелёк в блокчейне.\n"
+            f"{e('dot')} Ушёл — ничего не делай, заявка закрыта.\n"
+            f"{e('dot')} Не ушёл — верни в очередь командой "
+            f"<code>/repay {request_id}</code>",
         )
         return
 
@@ -1192,3 +1219,44 @@ async def admin_requests_screen(
         else:
             await call.message.answer(caption, reply_markup=request_decision(row["id"]))
     await call.answer()
+
+
+@router.message(Command("repay"))
+async def repay_command(message: Message, db: Database, config: Config) -> None:
+    """/repay НОМЕР — вернуть в очередь заявку, по которой перевод не ушёл.
+
+    Отдельная команда, а не кнопка: возвращать заявку можно только после того,
+    как человек своими глазами посмотрел кошелёк в блокчейне. Кнопка рядом с
+    сообщением провоцировала бы нажать её не проверив — и заплатить дважды.
+    """
+    if not _is_admin(message.from_user.id, config):
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().split()[0].isdigit():
+        await message.answer(
+            f"{e('warn')} <b>Формат команды</b>\n"
+            f"<code>/repay НОМЕР</code>\n\n"
+            f"{e('shield')} Только для заявок с неизвестным исходом и только "
+            f"после проверки кошелька в блокчейне."
+        )
+        return
+
+    request_id = int(parts[1].strip().split()[0])
+    row = await db.reopen_payout_request(request_id)
+    if row is None:
+        current = await db.get_payout_request(request_id)
+        state = current["status"] if current else "не найдена"
+        await message.answer(
+            f"{e('cross')} <b>Заявка №{request_id} не возвращена</b>\n"
+            f"{e('dot')} Статус · <b>{esc(state)}</b>\n"
+            f"{e('shield')} Возвращаются только заявки с неизвестным исходом."
+        )
+        return
+
+    await message.answer(
+        f"{e('check')} <b>Заявка №{request_id} снова в очереди</b>\n"
+        f"{e('profile')} Воркер · <code>{row['worker_id']}</code>\n"
+        f"{e('wallet')} <code>{esc(row['wallet'])}</code>",
+        reply_markup=request_decision(request_id),
+    )

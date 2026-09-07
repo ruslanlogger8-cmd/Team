@@ -46,7 +46,8 @@ class DryRunPayer:
 _SEQNO_MISMATCH = re.compile(r"exitcode\s*=\s*33\b")
 
 
-def _is_seqno_mismatch(exc: Exception) -> bool:
+def is_seqno_mismatch(exc: Exception) -> bool:
+    """Контракт отверг сообщение по номеру — значит, оно не исполнилось."""
     return bool(_SEQNO_MISMATCH.search(str(exc)))
 
 
@@ -198,7 +199,7 @@ class TonPayer:
         try:
             return await self._send_once(destination, amount_nano)
         except Exception as exc:  # noqa: BLE001 — разбираем причину ниже
-            if not _is_seqno_mismatch(exc):
+            if not is_seqno_mismatch(exc):
                 raise
             logger.warning(
                 "Контракт отверг платёж по seqno (exitcode=33) — номер устарел "
