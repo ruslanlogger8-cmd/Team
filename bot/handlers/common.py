@@ -146,11 +146,11 @@ async def top(call: CallbackQuery, db: Database, state: FSMContext) -> None:
         for place, (name, total, count) in enumerate(rows, 1):
             times = plural(count, "выплата", "выплаты", "выплат")
             lines.append(
-                f"<b>{place}.</b> {esc(name)}\n"
-                f"     {fmt_ton(total)} · {count} {times}"
+                f"<b>{place}.</b> {esc(name)} — <b>{fmt_ton(total)}</b> "
+                f"· {count} {times}"
             )
         # Цитата отделяет список от заголовка сама, без разделителей.
-        body = "<blockquote>" + "\n\n".join(lines) + "</blockquote>"
+        body = "<blockquote>" + "\n".join(lines) + "</blockquote>"
     await safe_edit(
         call,
         f"{e('top')} <b>Топ воркеров</b>\n\n"
