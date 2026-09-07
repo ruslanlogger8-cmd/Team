@@ -205,6 +205,30 @@ async def _start_gifts(
     return tasks
 
 
+async def _start_webapp(db: Database, config: Config, bot: Bot):
+    """Поднимает мини-апп. Сбой здесь не должен ронять выплаты.
+
+    Без WEBAPP_URL приложение всё равно слушает порт: Railway проверяет
+    доступность сервиса, а кнопку в меню просто не показываем.
+    """
+    try:
+        from .webapp import run_webapp
+
+        runner = await run_webapp(db, config, bot)
+    except Exception as exc:  # noqa: BLE001 — бот самодостаточен без аппа
+        logger.error("Мини-апп не запущен: %s", exc)
+        return None
+
+    if config.webapp_url:
+        logger.info("Мини-апп доступен по %s", config.webapp_url)
+    else:
+        logger.warning(
+            "WEBAPP_URL не задан — кнопки приложения в меню не будет. "
+            "Возьми публичный домен сервиса в Railway и положи его в WEBAPP_URL."
+        )
+    return runner
+
+
 async def main() -> None:
     config = Config.load()
     configure_emoji(config.use_premium_emoji)
@@ -219,6 +243,7 @@ async def main() -> None:
     # падает с UnboundLocalError и прячет настоящую причину сбоя.
     bot: Bot | None = None
     payer = None
+    webapp_runner = None
     background: list[asyncio.Task] = []
     try:
         payer = create_payer(config)
@@ -243,6 +268,7 @@ async def main() -> None:
         await _report_stuck(bot, db, config)
 
         background = await _start_gifts(db, config, bot, dp, payer)
+        webapp_runner = await _start_webapp(db, config, bot)
 
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("Бот запущен, ожидаю сообщения")
@@ -252,6 +278,8 @@ async def main() -> None:
             task.cancel()
         if background:
             await asyncio.gather(*background, return_exceptions=True)
+        if webapp_runner is not None:
+            await webapp_runner.cleanup()
         await db.close()
         # Клиент Toncenter держит свою aiohttp-сессию. Без закрытия процесс
         # уходит с «Unclosed client session» и прячет настоящую причину сбоя.

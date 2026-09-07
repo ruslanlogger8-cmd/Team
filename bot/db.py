@@ -310,6 +310,19 @@ class Database:
             await self.conn.commit()
             return cur.lastrowid
 
+    async def set_payout_request_photo(self, request_id: int, photo_id: str) -> None:
+        """Дописывает file_id скриншота уже созданной заявке.
+
+        Из мини-аппа фото приходит файлом, а file_id появляется только после
+        отправки его админу — то есть уже после записи заявки.
+        """
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE payout_requests SET photo_id=? WHERE id=?",
+                (photo_id, request_id),
+            )
+            await self.conn.commit()
+
     async def get_payout_request(self, request_id: int) -> dict | None:
         cur = await self.conn.execute(
             "SELECT * FROM payout_requests WHERE id=?", (request_id,)

@@ -96,6 +96,8 @@ class Config:
     mrkt_deposit_account: str
     claim_needs_approval: bool
     tg_proxy: str
+    webapp_url: str
+    webapp_port: int
     payout_comment: str = field(default="payout")
 
     @staticmethod
@@ -190,5 +192,9 @@ class Config:
             claim_needs_approval=os.environ.get("CLAIM_NEEDS_APPROVAL", "true").lower()
             not in ("0", "false", "no"),
             tg_proxy=os.environ.get("TG_PROXY", "").strip(),
+            webapp_url=os.environ.get("WEBAPP_URL", "").strip().rstrip("/"),
+            # Railway сам выдаёт PORT — слушать нужно именно его, иначе
+            # снаружи в сервис не достучаться.
+            webapp_port=_int_env("PORT", 8080, 1, 65535),
             payout_comment=os.environ.get("PAYOUT_COMMENT", "payout").strip() or "payout",
         )

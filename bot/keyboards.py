@@ -7,7 +7,9 @@ icon_custom_emoji_id, поэтому без Premium кнопка покажет 
 from __future__ import annotations
 
 from aiogram.enums import ButtonStyle
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo,
+)
 
 from .emoji import icon
 
@@ -32,8 +34,19 @@ def btn(
     return InlineKeyboardButton(**kwargs)
 
 
-def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
-    rows = [
+def main_menu(is_admin: bool = False, webapp_url: str = "") -> InlineKeyboardMarkup:
+    rows = []
+    if webapp_url:
+        # Мини-апп первой кнопкой: в нём то же самое, но удобнее.
+        rows.append([
+            InlineKeyboardButton(
+                text="Открыть приложение",
+                web_app=WebAppInfo(url=webapp_url),
+                style=SUCCESS,
+                **({"icon_custom_emoji_id": icon("logo")} if icon("logo") else {}),
+            )
+        ])
+    rows += [
         [
             btn("Профиль", "m:profile", PRIMARY, "profile"),
             btn("Баланс", "m:balance", PRIMARY, "balance"),

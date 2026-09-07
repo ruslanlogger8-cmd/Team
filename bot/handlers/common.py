@@ -60,7 +60,10 @@ async def _open_menu(
     target: Message | CallbackQuery, config: Config, balance_nano: int | None = None
 ) -> None:
     text = _menu_text(target.from_user.full_name, config, balance_nano)
-    keyboard = main_menu(is_admin=target.from_user.id in config.admin_ids)
+    keyboard = main_menu(
+        is_admin=target.from_user.id in config.admin_ids,
+        webapp_url=config.webapp_url,
+    )
     if isinstance(target, CallbackQuery):
         await safe_edit(target, text, keyboard)
     else:
@@ -246,7 +249,10 @@ async def wallet_save(message: Message, state: FSMContext, db: Database, config:
         message,
         f"{e('check')} <b>Кошелёк сохранён</b>\n"
         f"<code>{esc(address)}</code>",
-        main_menu(is_admin=message.from_user.id in config.admin_ids),
+        main_menu(
+            is_admin=message.from_user.id in config.admin_ids,
+            webapp_url=config.webapp_url,
+        ),
         photo=config.menu_photo or None,
     )
 

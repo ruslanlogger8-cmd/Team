@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TONNFT team</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --card-2: #1c2330;
+    --line: #232c3a;
+    --text: #e8edf5;
+    --muted: #8d99ab;
+    --accent: #2f9cf4;
+    --accent-2: #1b7fd4;
+    --green: #2ecc71;
+    --red: #f0546b;
+    --gold: #f5c451;
+    --radius: 16px;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  body {
+    margin: 0;
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 0 16px calc(96px + env(safe-area-inset-bottom));
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .hero {
+    margin: 0 -16px 18px;
+    padding: 26px 16px 22px;
+    text-align: center;
+    background:
+      radial-gradient(120% 100% at 50% 0%, rgba(47,156,244,.22), transparent 62%),
+      linear-gradient(180deg, #121a26, var(--bg));
+    border-bottom: 1px solid var(--line);
+  }
+  .hero .team { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .hero .name { margin-top: 6px; font-size: 19px; font-weight: 650; }
+  .hero .amount {
+    margin-top: 14px;
+    font-size: 38px; font-weight: 700; letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .hero .amount span { font-size: 19px; color: var(--muted); margin-left: 4px; }
+  .hero .sub { margin-top: 6px; font-size: 13px; color: var(--muted); }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 12px;
+  }
+  .card h2 {
+    margin: 0 0 12px;
+    font-size: 13px; font-weight: 600;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+  }
+
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 0; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row .k { color: var(--muted); font-size: 14px; flex-shrink: 0; }
+  .row .v { font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+
+  .place {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 0;
+  }
+  .place + .place { border-top: 1px solid var(--line); }
+  .place .num {
+    width: 26px; height: 26px; flex-shrink: 0;
+    display: grid; place-items: center;
+    border-radius: 9px; background: var(--card-2);
+    font-size: 13px; font-weight: 700; color: var(--muted);
+  }
+  .place.top .num { background: rgba(245,196,81,.16); color: var(--gold); }
+  .place .who { flex: 1; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .place .sum { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .place.me { background: rgba(47,156,244,.08); margin: 0 -8px; padding: 11px 8px; border-radius: 10px; }
+
+  .item { padding: 12px 0; }
+  .item + .item { border-top: 1px solid var(--line); }
+  .item .head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .item .sum { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .item .when { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .item .hash {
+    margin-top: 6px; font-size: 11px; color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow-wrap: anywhere;
+  }
+
+  .tag { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 7px; }
+  .tag.paid { background: rgba(46,204,113,.15); color: var(--green); }
+  .tag.processing, .tag.hold, .tag.pending { background: rgba(245,196,81,.15); color: var(--gold); }
+  .tag.failed, .tag.rejected { background: rgba(240,84,107,.15); color: var(--red); }
+
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
+  input[type=text], input[type=number] {
+    width: 100%; padding: 13px 14px;
+    background: var(--card-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px;
+    font-size: 15px; font-family: inherit;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+
+  .file {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 22px 14px; text-align: center;
+    border: 1.5px dashed var(--line); border-radius: 12px;
+    color: var(--muted); font-size: 14px; cursor: pointer;
+  }
+  .file.filled { border-style: solid; border-color: var(--green); color: var(--green); }
+  .file input { display: none; }
+
+  .seg { display: flex; gap: 8px; }
+  .seg button {
+    flex: 1; padding: 12px; border-radius: 12px;
+    background: var(--card-2); color: var(--muted);
+    border: 1px solid var(--line);
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .seg button.on { background: rgba(47,156,244,.14); border-color: var(--accent); color: var(--text); }
+
+  button.primary {
+    width: 100%; margin-top: 16px; padding: 15px;
+    border: none; border-radius: 13px;
+    background: linear-gradient(180deg, var(--accent), var(--accent-2));
+    color: #fff; font: inherit; font-size: 16px; font-weight: 650;
+    cursor: pointer;
+  }
+  button.primary:disabled { opacity: .45; cursor: default; }
+
+  .note { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
+  .empty { color: var(--muted); font-size: 14px; padding: 6px 0; }
+  .msg { margin-top: 12px; padding: 12px 14px; border-radius: 12px; font-size: 14px; display: none; }
+  .msg.err { display: block; background: rgba(240,84,107,.12); color: var(--red); }
+  .msg.ok { display: block; background: rgba(46,204,113,.12); color: var(--green); }
+
+  .tabs {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    display: flex;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    background: rgba(13,17,23,.94);
+    backdrop-filter: blur(14px);
+    border-top: 1px solid var(--line);
+  }
+  .tabs button {
+    flex: 1; padding: 10px 4px;
+    background: none; border: none; border-radius: 10px;
+    color: var(--muted); font: inherit; font-size: 12px; font-weight: 600;
+    cursor: pointer;
+  }
+  .tabs button.on { color: var(--accent); background: rgba(47,156,244,.1); }
+
+  .screen { display: none; }
+  .screen.on { display: block; animation: in .18s ease; }
+  @keyframes in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  .skeleton { height: 14px; border-radius: 7px; background: var(--card-2); margin: 10px 0; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="team" id="team">TONNFT team</div>
+  <div class="name" id="who">…</div>
+  <div class="amount" id="paid">0<span>TON</span></div>
+  <div class="sub" id="sub">всего выплачено</div>
+</div>
+
+<!-- Главная -->
+<section class="screen on" id="s-home">
+  <div class="card">
+    <h2>Профиль</h2>
+    <div class="row"><span class="k">Баланс</span><span class="v" id="balance">—</span></div>
+    <div class="row"><span class="k">Выплат</span><span class="v" id="count">—</span></div>
+    <div class="row"><span class="k">Доля</span><span class="v" id="share">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Кошелёк</h2>
+    <div id="wallet-view" class="row" style="padding-top:0">
+      <span class="k">Адрес</span><span class="v" id="wallet">не указан</span>
+    </div>
+    <label for="wallet-input">Куда получать выплаты</label>
+    <input id="wallet-input" type="text" placeholder="UQ… или EQ…" autocomplete="off" spellcheck="false">
+    <button class="primary" id="wallet-save">Сохранить адрес</button>
+    <div class="note">Адрес проверяется по контрольной сумме — с опечаткой не сохранится.</div>
+    <div class="msg" id="wallet-msg"></div>
+  </div>
+</section>
+
+<!-- Заявка -->
+<section class="screen" id="s-request">
+  <div class="card">
+    <h2>Заявка на выплату</h2>
+    <div id="open-request" class="empty" style="display:none"></div>
+
+    <div id="request-form">
+      <label>Сколько подарков передал</label>
+      <div class="seg">
+        <button type="button" class="on" data-count="1">Один</button>
+        <button type="button" data-count="many">Несколько</button>
+      </div>
+      <input id="count-input" type="number" min="2" max="50" placeholder="Сколько именно"
+             style="display:none; margin-top:8px">
+
+      <label>Скриншот передачи</label>
+      <label class="file" id="file-label">
+        <span id="file-text">Выбрать фото</span>
+        <input id="photo" type="file" accept="image/*">
+      </label>
+
+      <label for="req-wallet">Адрес для выплаты</label>
+      <input id="req-wallet" type="text" placeholder="UQ… или EQ…" autocomplete="off" spellcheck="false">
+
+      <button class="primary" id="send">Отправить заявку</button>
+      <div class="note" id="share-note"></div>
+      <div class="msg" id="request-msg"></div>
+    </div>
+  </div>
+</section>
+
+<!-- Топ -->
+<section class="screen" id="s-top">
+  <div class="card">
+    <h2>Топ воркеров</h2>
+    <div id="top-list">
+      <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+    </div>
+    <div class="note">Рейтинг по сумме выплат.</div>
+  </div>
+</section>
+
+<!-- История -->
+<section class="screen" id="s-history">
+  <div class="card">
+    <h2>История выплат</h2>
+    <div id="history-list">
+      <div class="skeleton"></div><div class="skeleton"></div>
+    </div>
+  </div>
+</section>
+
+<nav class="tabs">
+  <button class="on" data-screen="home">Профиль</button>
+  <button data-screen="request">Заявка</button>
+  <button data-screen="top">Топ</button>
+  <button data-screen="history">История</button>
+</nav>
+
+<script>
+const tg = window.Telegram?.WebApp;
+tg?.ready();
+tg?.expand();
+try { tg?.setHeaderColor?.('#0d1117'); tg?.setBackgroundColor?.('#0d1117'); } catch (e) {}
+
+const initData = tg?.initData || '';
+let me = null;
+let giftsCount = 1;
+
+const $ = (id) => document.getElementById(id);
+const buzz = (kind) => { try { tg?.HapticFeedback?.notificationOccurred(kind); } catch (e) {} };
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    ...options,
+    headers: { 'X-Init-Data': initData, ...(options.headers || {}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Что-то пошло не так');
+  return data;
+}
+
+function show(el, text, ok) {
+  el.textContent = text;
+  el.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+
+function shorten(address) {
+  return address && address.length > 14
+    ? address.slice(0, 6) + '…' + address.slice(-4)
+    : address;
+}
+
+function when(unix) {
+  const d = new Date(unix * 1000);
+  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' })
+    + ', ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+const STATUS = {
+  paid: 'выплачено', processing: 'в обработке', hold: 'ждёт решения',
+  pending: 'ждёт решения', failed: 'не прошла', rejected: 'отказано',
+};
+
+async function loadMe() {
+  me = await api('/api/me');
+  $('team').textContent = me.team;
+  $('who').textContent = me.name;
+  $('paid').innerHTML = me.paid_total.replace(' TON', '') + '<span>TON</span>';
+  $('balance').textContent = me.balance;
+  $('count').textContent = me.paid_count;
+  $('share').textContent = me.share_percent + '% от продажи';
+  $('wallet').textContent = me.wallet ? shorten(me.wallet) : 'не указан';
+  $('share-note').textContent =
+    'Администратор проверит заявку и отправит ' + me.share_percent + '% от суммы продажи.';
+  if (me.wallet) $('req-wallet').value = me.wallet;
+
+  const open = $('open-request');
+  if (me.has_open_request) {
+    open.style.display = 'block';
+    open.textContent = 'Заявка уже на рассмотрении. Дождись решения по ней.';
+    $('request-form').style.display = 'none';
+  } else {
+    open.style.display = 'none';
+    $('request-form').style.display = 'block';
+  }
+}
+
+async function loadTop() {
+  const { top } = await api('/api/top');
+  const box = $('top-list');
+  if (!top.length) { box.innerHTML = '<div class="empty">Выплат пока не было.</div>'; return; }
+  box.innerHTML = top.map((row) => `
+    <div class="place ${row.place <= 3 ? 'top' : ''} ${row.name === me?.name ? 'me' : ''}">
+      <div class="num">${row.place}</div>
+      <div class="who"></div>
+      <div class="sum">${row.total}</div>
+    </div>`).join('');
+  // Имя вставляем текстом, не разметкой: оно приходит от людей.
+  box.querySelectorAll('.who').forEach((el, i) => { el.textContent = top[i].name; });
+}
+
+async function loadHistory() {
+  const { history } = await api('/api/history');
+  const box = $('history-list');
+  if (!history.length) { box.innerHTML = '<div class="empty">Выплат пока не было.</div>'; return; }
+  box.innerHTML = history.map((row) => `
+    <div class="item">
+      <div class="head">
+        <span class="sum">${row.amount}</span>
+        <span class="tag ${row.status}">${STATUS[row.status] || row.status}</span>
+      </div>
+      <div class="when">${when(row.created_at)}</div>
+      ${row.tx_hash ? `<div class="hash">${row.tx_hash}</div>` : ''}
+    </div>`).join('');
+}
+
+// Вкладки
+document.querySelectorAll('.tabs button').forEach((tab) => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach((b) => b.classList.remove('on'));
+    document.querySelectorAll('.screen').forEach((s) => s.classList.remove('on'));
+    tab.classList.add('on');
+    $('s-' + tab.dataset.screen).classList.add('on');
+    try { tg?.HapticFeedback?.selectionChanged(); } catch (e) {}
+    if (tab.dataset.screen === 'top') loadTop().catch(() => {});
+    if (tab.dataset.screen === 'history') loadHistory().catch(() => {});
+  };
+});
+
+// Количество подарков
+document.querySelectorAll('.seg button').forEach((btn) => {
+  btn.onclick = () => {
+    document.querySelectorAll('.seg button').forEach((b) => b.classList.remove('on'));
+    btn.classList.add('on');
+    const many = btn.dataset.count === 'many';
+    $('count-input').style.display = many ? 'block' : 'none';
+    giftsCount = many ? Number($('count-input').value) || 2 : 1;
+  };
+});
+$('count-input').oninput = (event) => { giftsCount = Number(event.target.value) || 1; };
+
+// Фото
+$('photo').onchange = (event) => {
+  const file = event.target.files[0];
+  $('file-label').classList.toggle('filled', Boolean(file));
+  $('file-text').textContent = file ? file.name : 'Выбрать фото';
+};
+
+// Сохранение кошелька
+$('wallet-save').onclick = async () => {
+  const button = $('wallet-save');
+  const address = $('wallet-input').value.trim();
+  button.disabled = true;
+  try {
+    const data = await api('/api/wallet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wallet: address }),
+    });
+    $('wallet').textContent = shorten(data.wallet);
+    $('req-wallet').value = data.wallet;
+    $('wallet-input').value = '';
+    show($('wallet-msg'), 'Адрес сохранён', true);
+    buzz('success');
+  } catch (err) {
+    show($('wallet-msg'), err.message, false);
+    buzz('error');
+  } finally {
+    button.disabled = false;
+  }
+};
+
+// Отправка заявки
+$('send').onclick = async () => {
+  const button = $('send');
+  const file = $('photo').files[0];
+  const msg = $('request-msg');
+
+  if (!file) { show(msg, 'Приложи скриншот передачи.', false); buzz('error'); return; }
+
+  const form = new FormData();
+  form.append('photo', file);
+  form.append('wallet', $('req-wallet').value.trim());
+  form.append('gifts_count', String(giftsCount));
+
+  button.disabled = true;
+  button.textContent = 'Отправляю…';
+  try {
+    const data = await api('/api/request', { method: 'POST', body: form });
+    show(msg, 'Заявка №' + data.id + ' отправлена. Ждём решения администратора.', true);
+    buzz('success');
+    await loadMe();
+  } catch (err) {
+    show(msg, err.message, false);
+    buzz('error');
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Отправить заявку';
+  }
+};
+
+loadMe().catch((err) => { $('who').textContent = err.message; });
+</script>
+</body>
+</html>
