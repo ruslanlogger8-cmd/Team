@@ -78,3 +78,17 @@ class TestAddress:
     def test_whitespace_tolerated(self):
         addr = build_ton_address(os.urandom(32))
         assert is_valid_ton_address(f"  {addr}  ")
+
+
+class TestPlural:
+    """Русское склонение: цифра рядом со словом не должна резать глаз."""
+
+    @pytest.mark.parametrize("count,expected", [
+        (1, "выплата"), (2, "выплаты"), (4, "выплаты"), (5, "выплат"),
+        (11, "выплат"), (12, "выплат"), (14, "выплат"),
+        (21, "выплата"), (22, "выплаты"), (25, "выплат"),
+        (101, "выплата"), (111, "выплат"), (0, "выплат"),
+    ])
+    def test_forms(self, count, expected):
+        from bot.utils import plural
+        assert plural(count, "выплата", "выплаты", "выплат") == expected

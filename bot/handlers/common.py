@@ -21,7 +21,7 @@ from ..keyboards import (
 from ..payout import execute_payout, request_payout
 from ..states import ClaimForm, PayoutRequestForm, WalletForm, WithdrawForm
 from ..ui import reset_state, safe_edit, send_screen
-from ..utils import fmt_ton, is_valid_ton_address, parse_ton
+from ..utils import fmt_ton, is_valid_ton_address, parse_ton, plural
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -30,7 +30,6 @@ PER_PAGE = 5
 # Потолок на количество подарков в одной заявке: защита от опечатки вроде
 # «100» и от бессмысленно раздутых заявок.
 MAX_GIFTS_PER_REQUEST = 50
-MEDALS = ("gold", "silver", "bronze")
 STATUS = {
     "paid": ("check", "выплачено"),
     "processing": ("time", "в обработке"),
@@ -145,9 +144,13 @@ async def top(call: CallbackQuery, db: Database, state: FSMContext) -> None:
     else:
         lines = []
         for place, (name, total, count) in enumerate(rows, 1):
-            mark = e(MEDALS[place - 1]) if place <= 3 else f"{e('dot')} {place}."
-            lines.append(f"{mark} <b>{esc(name)}</b> · {fmt_ton(total)} · {count}")
-        body = "\n".join(lines)
+            times = plural(count, "выплата", "выплаты", "выплат")
+            lines.append(
+                f"<b>{place}.</b> {esc(name)}\n"
+                f"     {fmt_ton(total)} · {count} {times}"
+            )
+        # Цитата отделяет список от заголовка сама, без разделителей.
+        body = "<blockquote>" + "\n\n".join(lines) + "</blockquote>"
     await safe_edit(
         call,
         f"{e('top')} <b>Топ воркеров</b>\n\n"

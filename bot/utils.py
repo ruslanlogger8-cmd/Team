@@ -98,3 +98,20 @@ def build_ton_address(account_id: bytes, workchain: int = 0, bounceable: bool = 
     body = bytes([tag, workchain & 0xFF]) + account_id
     body += _crc16_xmodem(body).to_bytes(2, "big")
     return base64.urlsafe_b64encode(body).decode()
+
+
+def plural(count: int, one: str, few: str, many: str) -> str:
+    """Русское склонение по числу: 1 выплата, 2 выплаты, 5 выплат.
+
+    Правило смотрит на две последние цифры: 11–14 всегда берут форму
+    «выплат», иначе решает последняя цифра.
+    """
+    tail_two = abs(count) % 100
+    if 11 <= tail_two <= 14:
+        return many
+    tail_one = abs(count) % 10
+    if tail_one == 1:
+        return one
+    if 2 <= tail_one <= 4:
+        return few
+    return many
