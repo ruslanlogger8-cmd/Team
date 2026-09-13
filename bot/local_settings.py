@@ -15,8 +15,8 @@ from __future__ import annotations
 
 SETTINGS: dict[str, str] = {
     # ─── Обязательное ────────────────────────────────────────────────
-    "BOT_TOKEN": "8809440322:AAFy_Ct6RDq6upk9KtoxkgxeEqqoO46v9Bg",
-    "ADMIN_IDS": "974288213,8501015608",   # Telegram id админов через запятую
+    "BOT_TOKEN": "8408388423:AAGbJ7krY7eJwtsbkGxqWog8pt8k62517B8",
+    "ADMIN_IDS": "8135785574",    # Telegram id админов через запятую
     "WALLET_MNEMONIC": "",        # 24 слова через пробел
 
     # ВРЕМЕННО: без seed-фразы бот не стартует, поэтому включён холостой
