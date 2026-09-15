@@ -32,3 +32,9 @@ class ApproveForm(StatesGroup):
     """Админ принял заявку и вводит сумму продажи."""
 
     waiting_sale = State()
+
+
+class InfoForm(StatesGroup):
+    """Админ присылает текст раздела «Все боты и Правила»."""
+
+    waiting_content = State()

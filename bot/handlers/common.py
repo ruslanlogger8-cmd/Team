@@ -15,7 +15,7 @@ from ..emoji import e, esc
 from ..gifts.claim import ClaimResult, parse_nft_slug, parse_username, submit_claim
 from ..keyboards import (
     back_menu, claim_menu, confirm_withdraw, gifts_count_choice, history_nav,
-    main_menu, payout_request_menu, request_decision, wallet_choice,
+    info_menu, main_menu, payout_request_menu, request_decision, wallet_choice,
     wallet_menu, withdraw_choice, withdrawal_actions,
 )
 from ..payout import execute_payout, request_payout
@@ -1064,3 +1064,46 @@ async def my_payout_requests(
     )
     await safe_edit(call, f"{e('withdraw')} <b>Мои заявки</b>\n\n{body}", payout_request_menu())
     await call.answer()
+
+
+# ─── Все боты и Правила ────────────────────────────────────────────────
+
+# Подпись к фото в Telegram ограничена 1024 символами. Длинный текст
+# отправляем отдельным сообщением, иначе Telegram обрежет его молча.
+CAPTION_LIMIT = 1024
+INFO_KEY = "info"
+
+
+@router.callback_query(F.data == "m:info")
+async def info_screen(
+    call: CallbackQuery, db: Database, config: Config, state: FSMContext
+) -> None:
+    """Показывает текст, который задал админ, ровно как он его прислал."""
+    await reset_state(state)
+    is_admin = call.from_user.id in config.admin_ids
+    saved = await db.get_setting(INFO_KEY)
+    await call.answer()
+
+    if saved is None or not (saved["value"] or saved["photo_id"]):
+        text = (
+            f"{e('shield')} <b>Все боты и Правила</b>\n\n"
+            f"{e('dot')} Раздел пока пустой."
+        )
+        if is_admin:
+            text += f"\n{e('key')} Заполни его кнопкой ниже."
+        await safe_edit(call, text, info_menu(is_admin))
+        return
+
+    body = saved["value"] or ""
+    photo = saved["photo_id"]
+    keyboard = info_menu(is_admin)
+
+    # Экран открывается новым сообщением, а не правкой прежнего: текст
+    # админа может быть и с фото, и длиннее подписи, а Telegram не даёт
+    # превратить одно сообщение в другое.
+    if photo and len(body) <= CAPTION_LIMIT:
+        await call.message.answer_photo(photo, caption=body, reply_markup=keyboard)
+        return
+    if photo:
+        await call.message.answer_photo(photo)
+    await call.message.answer(body, reply_markup=keyboard)

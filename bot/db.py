@@ -82,6 +82,12 @@ CREATE TABLE IF NOT EXISTS payout_requests (
     resolved_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_payout_requests_status ON payout_requests(status);
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,        -- что храним, например 'info'
+    value      TEXT,                    -- готовый HTML: формат сохранён как есть
+    photo_id   TEXT,
+    updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS credits (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,
@@ -296,6 +302,31 @@ class Database:
                 raise
 
     # ─── Заявки на выплату (фото + адрес, решение по кнопке) ──────────
+
+    # ─── Хранилище текстов, которые правит админ ──────────────────────
+
+    async def get_setting(self, key: str) -> dict | None:
+        cur = await self.conn.execute("SELECT * FROM settings WHERE key=?", (key,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def set_setting(
+        self, key: str, value: str, photo_id: str | None = None
+    ) -> None:
+        """Сохраняет текст как есть. Значение приходит готовым HTML.
+
+        Формат разбирает Telegram, а не мы: цитаты, жирный, премиум-эмодзи
+        уже разложены по тегам, и переписывать их нельзя — иначе текст
+        вернётся воркерам не тем, что набрал админ.
+        """
+        async with self._lock:
+            await self.conn.execute(
+                "INSERT INTO settings (key, value, photo_id, updated_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                "photo_id=excluded.photo_id, updated_at=excluded.updated_at",
+                (key, value, photo_id, int(time.time())),
+            )
+            await self.conn.commit()
 
     async def add_payout_request(
         self, worker_id: int, wallet: str, photo_id: str | None, gifts_count: int = 1

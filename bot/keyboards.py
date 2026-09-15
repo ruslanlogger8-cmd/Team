@@ -60,6 +60,7 @@ def main_menu(
         [btn("Заявка на выплату", "m:payout_request", SUCCESS, "withdraw")],
         [btn("Подать заявку на подарок", "m:claim", SUCCESS, "gift")],
         [btn("Топ воркеров", "m:top", PRIMARY, "top")],
+        [btn("Все боты и Правила", "m:info", PRIMARY, "shield")],
         [btn("Вывести баланс", "m:withdraw", SUCCESS, "coin")],
     ]
     if chat_url:
@@ -243,3 +244,12 @@ def gifts_count_choice() -> InlineKeyboardMarkup:
             [btn("В меню", "m:main", PRIMARY, "back")],
         ]
     )
+
+
+def info_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
+    """Экран «Все боты и Правила». Кнопку правки видит только админ."""
+    rows = []
+    if is_admin:
+        rows.append([btn("Изменить текст", "info:edit", DANGER, "key")])
+    rows.append([btn("В меню", "m:main", PRIMARY, "back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

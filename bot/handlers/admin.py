@@ -17,7 +17,7 @@ from ..keyboards import (
     workers_list,
 )
 from ..payout import approve_payout, check_limits, execute_payout, reject_payout
-from ..states import ApproveForm, CreditForm
+from ..states import ApproveForm, CreditForm, InfoForm
 from ..ton import is_seqno_mismatch
 from ..ui import safe_edit
 from ..utils import fmt_ton, parse_ton
@@ -1309,4 +1309,63 @@ async def paid_command(message: Message, db: Database, config: Config) -> None:
         f"{e('profile')} Воркер · <code>{row['worker_id']}</code>\n"
         f"{e('coin')} <b>{fmt_ton(share_nano)}</b>\n"
         f"{e('dot')} Учтено в истории и топе."
+    )
+
+
+# ─── Правка раздела «Все боты и Правила» ──────────────────────────────
+
+INFO_KEY = "info"
+
+
+@router.callback_query(F.data == "info:edit")
+async def info_edit_prompt(
+    call: CallbackQuery, config: Config, state: FSMContext
+) -> None:
+    if not _is_admin(call.from_user.id, config):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    await state.set_state(InfoForm.waiting_content)
+    await call.answer()
+    await call.message.answer(
+        f"{e('key')} <b>Новый текст раздела</b>\n"
+        f"{e('dot')} Пришли сообщение — оно сохранится ровно в том виде, "
+        f"в каком ты его набрал.\n"
+        f"{e('dot')} Цитаты, жирный, ссылки, эмодзи — всё сохранится.\n"
+        f"{e('dot')} Хочешь с картинкой — пришли фото и текст подписью.\n\n"
+        f"{e('warn')} Прежний текст заменится целиком."
+    )
+
+
+@router.message(InfoForm.waiting_content)
+async def info_edit_save(
+    message: Message, db: Database, config: Config, state: FSMContext
+) -> None:
+    """Сохраняет присланное сообщение как есть.
+
+    html_text отдаёт разметку, разобранную самим Telegram: цитаты, жирный,
+    премиум-эмодзи уже в тегах. Пересобирать её вручную нельзя — воркеры
+    получили бы не то, что набрал админ.
+    """
+    if not _is_admin(message.from_user.id, config):
+        return
+
+    body = message.html_text
+    photo_id = message.photo[-1].file_id if message.photo else None
+
+    if not body and not photo_id:
+        await message.answer(
+            f"{e('cross')} <b>Пусто</b>\n"
+            f"{e('dot')} Пришли текст или фото с подписью."
+        )
+        return
+
+    await state.clear()
+    await db.set_setting(INFO_KEY, body, photo_id)
+
+    what = "Фото и текст" if photo_id and body else ("Фото" if photo_id else "Текст")
+    await message.answer(
+        f"{e('check')} <b>Сохранено</b>\n"
+        f"{e('dot')} {what} раздела «Все боты и Правила» обновлён.\n"
+        f"{e('dot')} Проверь, как видят воркеры — кнопка в меню."
     )
