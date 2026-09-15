@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
+from html import unescape
 
 from aiogram import F, Router
 from aiogram.filters import CommandStart
@@ -1068,10 +1070,21 @@ async def my_payout_requests(
 
 # ─── Все боты и Правила ────────────────────────────────────────────────
 
-# Подпись к фото в Telegram ограничена 1024 символами. Длинный текст
-# отправляем отдельным сообщением, иначе Telegram обрежет его молча.
+# Подпись к фото в Telegram ограничена 1024 символами. Считает Telegram
+# видимые символы, а не разметку: теги цитат и премиум-эмодзи занимают
+# втрое больше места в HTML, чем на экране.
 CAPTION_LIMIT = 1024
 INFO_KEY = "info"
+_TAGS = re.compile(r"<[^>]+>")
+
+
+def visible_length(html: str) -> int:
+    """Сколько символов увидит человек. По ним Telegram и меряет подпись.
+
+    Мерить длину HTML нельзя: текст, спокойно влезающий в подпись, из-за
+    тегов выглядел бы длинным, и фото ушло бы отдельно от текста.
+    """
+    return len(unescape(_TAGS.sub("", html)))
 
 
 @router.callback_query(F.data == "m:info")
@@ -1101,7 +1114,7 @@ async def info_screen(
     # Экран открывается новым сообщением, а не правкой прежнего: текст
     # админа может быть и с фото, и длиннее подписи, а Telegram не даёт
     # превратить одно сообщение в другое.
-    if photo and len(body) <= CAPTION_LIMIT:
+    if photo and visible_length(body) <= CAPTION_LIMIT:
         await call.message.answer_photo(photo, caption=body, reply_markup=keyboard)
         return
     if photo:

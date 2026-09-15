@@ -68,3 +68,41 @@ def test_edit_button_is_admin_only():
 
     assert "info:edit" not in worker
     assert "info:edit" in admin
+
+
+class TestCaptionLength:
+    """Telegram меряет подпись видимыми символами, а не разметкой."""
+
+    def test_markup_does_not_count(self):
+        from bot.handlers.common import visible_length
+
+        html = (
+            '<tg-emoji emoji-id="5242287818499200693">🤖</tg-emoji> '
+            "<b>Боты:</b>\n<blockquote>выплаты</blockquote>"
+        )
+        assert visible_length(html) == len("🤖 Боты:\nвыплаты")
+
+    def test_escaped_characters_count_as_one(self):
+        from bot.handlers.common import visible_length
+
+        assert visible_length("Гарант &amp; выплаты") == len("Гарант & выплаты")
+
+    def test_rich_text_within_the_limit_stays_one_message(self):
+        """Ровно случай, который раньше разъезжался на два сообщения."""
+        from bot.handlers.common import CAPTION_LIMIT, visible_length
+
+        # Текст вроде правил команды: короткий, но весь в цитатах и
+        # премиум-эмодзи. Видимых символов мало, а HTML — втрое больше.
+        block = (
+            '<tg-emoji emoji-id="5242287818499200693">💎</tg-emoji> '
+            "<blockquote>Выплата в TON, минималка 0.1</blockquote>\n"
+        )
+        html = block * 10
+
+        assert len(html) > CAPTION_LIMIT
+        assert visible_length(html) <= CAPTION_LIMIT
+
+    def test_genuinely_long_text_exceeds_the_limit(self):
+        from bot.handlers.common import CAPTION_LIMIT, visible_length
+
+        assert visible_length("я" * 1100) > CAPTION_LIMIT
