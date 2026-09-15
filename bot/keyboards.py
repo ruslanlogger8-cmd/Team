@@ -36,6 +36,7 @@ def btn(
 
 def main_menu(
     is_admin: bool = False, webapp_url: str = "", chat_url: str = "",
+    gifts_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
     rows = []
     if webapp_url:
@@ -58,7 +59,9 @@ def main_menu(
             btn("История", "m:history", PRIMARY, "history"),
         ],
         [btn("Заявка на выплату", "m:payout_request", SUCCESS, "withdraw")],
-        [btn("Подать заявку на подарок", "m:claim", SUCCESS, "gift")],
+        # Пока приём подарков выключен, кнопка вела бы только в отказ.
+        *([[btn("Подать заявку на подарок", "m:claim", SUCCESS, "gift")]]
+          if gifts_enabled else []),
         [btn("Топ воркеров", "m:top", PRIMARY, "top")],
         [btn("Все боты и Правила", "m:info", PRIMARY, "shield")],
         [btn("Вывести баланс", "m:withdraw", SUCCESS, "coin")],

@@ -106,3 +106,22 @@ class TestCaptionLength:
         from bot.handlers.common import CAPTION_LIMIT, visible_length
 
         assert visible_length("я" * 1100) > CAPTION_LIMIT
+
+
+class TestDeadButtons:
+    """В меню не должно быть кнопок, которые ведут только в отказ."""
+
+    def test_gift_button_hidden_while_gifts_are_off(self):
+        texts = [b.text for row in main_menu().inline_keyboard for b in row]
+        assert "Подать заявку на подарок" not in texts
+
+    def test_gift_button_appears_when_gifts_are_on(self):
+        kb = main_menu(gifts_enabled=True)
+        texts = [b.text for row in kb.inline_keyboard for b in row]
+        assert "Подать заявку на подарок" in texts
+
+    def test_payout_request_is_always_there(self):
+        """Основной путь к деньгам от флага подарков не зависит."""
+        for kb in (main_menu(), main_menu(gifts_enabled=True)):
+            texts = [b.text for row in kb.inline_keyboard for b in row]
+            assert "Заявка на выплату" in texts

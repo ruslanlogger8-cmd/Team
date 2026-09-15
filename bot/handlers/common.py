@@ -53,7 +53,7 @@ def _menu_text(name: str, config: Config, balance_nano: int | None) -> str:
     mode = (
         f"{e('withdraw')} Выплаты приходят автоматически"
         if config.auto_payout
-        else f"{e('withdraw')} Вывод — кнопкой «Вывести средства»"
+        else f"{e('withdraw')} Выплата — по заявке, подтверждает менеджер"
     )
     return head + f"\n{mode}"
 
@@ -66,6 +66,7 @@ async def _open_menu(
         is_admin=target.from_user.id in config.admin_ids,
         webapp_url=config.webapp_url,
         chat_url=config.team_chat_url,
+        gifts_enabled=config.gifts_enabled,
     )
     if isinstance(target, CallbackQuery):
         await safe_edit(target, text, keyboard)
@@ -256,6 +257,7 @@ async def wallet_save(message: Message, state: FSMContext, db: Database, config:
             is_admin=message.from_user.id in config.admin_ids,
             webapp_url=config.webapp_url,
             chat_url=config.team_chat_url,
+            gifts_enabled=config.gifts_enabled,
         ),
         photo=config.menu_photo or None,
     )
