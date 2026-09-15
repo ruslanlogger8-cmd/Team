@@ -97,6 +97,7 @@ class Config:
     claim_needs_approval: bool
     tg_proxy: str
     webapp_url: str
+    team_chat_url: str
     webapp_port: int
     payout_comment: str = field(default="payout")
 
@@ -193,6 +194,7 @@ class Config:
             not in ("0", "false", "no"),
             tg_proxy=os.environ.get("TG_PROXY", "").strip(),
             webapp_url=os.environ.get("WEBAPP_URL", "").strip().rstrip("/"),
+            team_chat_url=os.environ.get("TEAM_CHAT_URL", "").strip(),
             # Railway сам выдаёт PORT — слушать нужно именно его, иначе
             # снаружи в сервис не достучаться.
             webapp_port=_int_env("PORT", 8080, 1, 65535),

@@ -34,7 +34,9 @@ def btn(
     return InlineKeyboardButton(**kwargs)
 
 
-def main_menu(is_admin: bool = False, webapp_url: str = "") -> InlineKeyboardMarkup:
+def main_menu(
+    is_admin: bool = False, webapp_url: str = "", chat_url: str = "",
+) -> InlineKeyboardMarkup:
     rows = []
     if webapp_url:
         # Мини-апп первой кнопкой: в нём то же самое, но удобнее.
@@ -60,6 +62,16 @@ def main_menu(is_admin: bool = False, webapp_url: str = "") -> InlineKeyboardMar
         [btn("Топ воркеров", "m:top", PRIMARY, "top")],
         [btn("Вывести баланс", "m:withdraw", SUCCESS, "coin")],
     ]
+    if chat_url:
+        # Ссылка, а не callback: Telegram открывает чат сам.
+        rows.append([
+            InlineKeyboardButton(
+                text="Чат команды",
+                url=chat_url,
+                style=PRIMARY,
+                **({"icon_custom_emoji_id": icon("users")} if icon("users") else {}),
+            )
+        ])
     if is_admin:
         rows.append([btn("Панель администратора", "m:admin", DANGER, "admin")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

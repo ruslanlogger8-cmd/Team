@@ -111,3 +111,26 @@ class TestEscaping:
 
     def test_injection_is_neutralised(self):
         assert "<tg-emoji" not in esc("<tg-emoji emoji-id='1'>x</tg-emoji>")
+
+
+class TestTeamChatButton:
+    """Ссылка на чат: кнопка появляется только когда адрес задан."""
+
+    def test_button_absent_without_a_link(self):
+        from bot.keyboards import main_menu
+
+        texts = [b.text for row in main_menu().inline_keyboard for b in row]
+        assert "Чат команды" not in texts
+
+    def test_button_opens_the_link(self):
+        from bot.keyboards import main_menu
+
+        link = "https://t.me/+9cYsWpZxjScxZWNi"
+        buttons = [
+            b for row in main_menu(chat_url=link).inline_keyboard for b in row
+        ]
+        chat = next(b for b in buttons if b.text == "Чат команды")
+
+        # Ссылка, а не callback: нажатие открывает чат, а не идёт в бота.
+        assert chat.url == link
+        assert chat.callback_data is None

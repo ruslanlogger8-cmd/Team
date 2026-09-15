@@ -63,6 +63,7 @@ async def _open_menu(
     keyboard = main_menu(
         is_admin=target.from_user.id in config.admin_ids,
         webapp_url=config.webapp_url,
+        chat_url=config.team_chat_url,
     )
     if isinstance(target, CallbackQuery):
         await safe_edit(target, text, keyboard)
@@ -252,6 +253,7 @@ async def wallet_save(message: Message, state: FSMContext, db: Database, config:
         main_menu(
             is_admin=message.from_user.id in config.admin_ids,
             webapp_url=config.webapp_url,
+            chat_url=config.team_chat_url,
         ),
         photo=config.menu_photo or None,
     )
